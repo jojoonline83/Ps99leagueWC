@@ -73,8 +73,16 @@ async function resolveUsernames(userIds) {
                 });
                 if (res.ok) {
                     const json = await res.json();
-                    (json.data || []).forEach(u => { map[u.id] = u.displayName || u.name; });
-                    ok = true;
+                    const data = json.data || [];
+                    if (data.length === 0) {
+                        // Roblox sometimes soft-throttles by returning HTTP 200
+                        // with an empty data array instead of a 429 — treat an
+                        // empty result for a non-empty batch as a rate-limit hit.
+                        await new Promise(r => setTimeout(r, 1500 * attempt));
+                    } else {
+                        data.forEach(u => { map[u.id] = u.displayName || u.name; });
+                        ok = true;
+                    }
                 } else if (res.status === 429) {
                     // Rate-limited — back off longer, respecting Retry-After if present.
                     const retryAfter = Number(res.headers.get('retry-after')) || 0;
