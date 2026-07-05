@@ -1,8 +1,12 @@
 name: Snapshot Leagues Data
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  # Scheduling is handled by an external cron (Google Apps Script calling
+  # workflow_dispatch) since GitHub's own `schedule:` trigger drifts badly at
+  # 5-minute intervals. Keeping both caused overlapping dispatches close
+  # enough together that GitHub cancelled queued-but-not-yet-started runs
+  # before they ever executed — leaving history.json stale for many cycles
+  # in a row. workflow_dispatch only, so every trigger actually gets to run.
   workflow_dispatch:
 
 permissions:
