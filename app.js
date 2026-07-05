@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v7]';
+document.title = 'PS99 World Cup II — Leagues [v8]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
