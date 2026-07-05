@@ -58,6 +58,34 @@ function isUnresolvedName(entry) {
     return entry.DisplayName === String(entry.UserID);
 }
 
+// Shared by the Top 500 detail-fetch step and the standing-exception step,
+// so an exception league's already-fetched detail never needs a second,
+// redundant hit to the same league-detail URL.
+function buildLeagueFromDetail(detail, extra) {
+    const contribByUser = {};
+    (detail.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
+
+    const roster = [];
+    if (detail.Owner && detail.Owner.UserID) {
+        roster.push({
+            UserID: detail.Owner.UserID, DisplayName: detail.Owner.DisplayName,
+            Points: contribByUser[detail.Owner.UserID] ?? 0, Role: 'Owner',
+        });
+    }
+    (detail.Members || []).forEach(m => {
+        roster.push({
+            UserID: m.UserID, DisplayName: m.DisplayName,
+            Points: contribByUser[m.UserID] ?? 0, Role: 'Member',
+        });
+    });
+
+    return {
+        ID: detail.ID, Name: detail.Name, Points: detail.Points,
+        Members: roster.length, MemberCapacity: detail.MemberCapacity,
+        roster, ...(extra ? { Extra: true } : {}),
+    };
+}
+
 async function resolveUsernames(userIds) {
     const map = {};
     const ROBLOX_URL = 'https://users.roblox.com/v1/users';
@@ -125,10 +153,13 @@ if (!summaries.length) {
     process.exit(0);
 }
 
-// 1b. Add standing-exception leagues that may have dropped out of the Top
+// 1b. Fetch standing-exception leagues that may have dropped out of the Top
 // 500, so their history/deltas keep working. Fetched directly by name since
-// they might not appear on any of the pages above.
+// they might not appear on any of the pages above. Built straight into a
+// full league object (roster included) from this one fetch — no second,
+// redundant hit to the same detail URL in step 2.
 const trackedNamesLower = new Set(summaries.map(s => s.NameLower || s.Name.toLowerCase()));
+const extraLeagues = [];
 for (const extraName of EXTRA_LEAGUE_NAMES) {
     if (trackedNamesLower.has(extraName.toLowerCase())) continue;
     const detailJson = await fetchJson(`${API_BASE}/leagues/${encodeURIComponent(extraName)}`);
@@ -137,15 +168,11 @@ for (const extraName of EXTRA_LEAGUE_NAMES) {
         console.log(`Extra tracked league "${extraName}" not found — skipping this cycle.`);
         continue;
     }
-    summaries.push({
-        Name: detail.Name, NameLower: detail.NameLower || detail.Name.toLowerCase(), ID: detail.ID,
-        Points: detail.Points, Members: 1 + (detail.Members || []).length, MemberCapacity: detail.MemberCapacity,
-        Extra: true,
-    });
+    extraLeagues.push(buildLeagueFromDetail(detail, true));
 }
 
-// 2. Fetch full roster + point-contribution detail for every league.
-const leagues = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, async summary => {
+// 2. Fetch full roster + point-contribution detail for every Top 500 league.
+const rankedLeagues = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, async summary => {
     const detailJson = await fetchJson(`${API_BASE}/leagues/${encodeURIComponent(summary.Name)}`);
     const detail = detailJson?.data;
 
@@ -156,33 +183,13 @@ const leagues = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, async su
         return {
             ID: summary.ID, Name: summary.Name, Points: summary.Points,
             Members: summary.Members, MemberCapacity: summary.MemberCapacity,
-            roster: [], ...(summary.Extra ? { Extra: true } : {}),
+            roster: [],
         };
     }
 
-    const contribByUser = {};
-    (detail.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
-
-    const roster = [];
-    if (detail.Owner && detail.Owner.UserID) {
-        roster.push({
-            UserID: detail.Owner.UserID, DisplayName: detail.Owner.DisplayName,
-            Points: contribByUser[detail.Owner.UserID] ?? 0, Role: 'Owner',
-        });
-    }
-    (detail.Members || []).forEach(m => {
-        roster.push({
-            UserID: m.UserID, DisplayName: m.DisplayName,
-            Points: contribByUser[m.UserID] ?? 0, Role: 'Member',
-        });
-    });
-
-    return {
-        ID: detail.ID, Name: detail.Name, Points: detail.Points,
-        Members: roster.length, MemberCapacity: detail.MemberCapacity,
-        roster, ...(summary.Extra ? { Extra: true } : {}),
-    };
+    return buildLeagueFromDetail(detail, false);
 });
+const leagues = rankedLeagues.concat(extraLeagues);
 
 // 3. Resolve any numeric-fallback display names across all rosters.
 const needsResolve = new Set();
