@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v9]';
+document.title = 'PS99 World Cup II — Leagues [v10]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
@@ -21,12 +21,13 @@ const PALETTE = [
 ];
 
 // ── State ──────────────────────────────────
-// The Top 2500 leaderboard, with each league's roster + point contributions,
-// comes entirely from history.json (written every ~5 min by a background
-// GitHub Action — see .github/scripts/snapshot.mjs). historyData holds every
-// snapshot within the retention window (~95 min), oldest first; the last
-// entry is "now". Only search falls back to a live API call, since
-// history.json only tracks the Top 2500.
+// The Top 500 leaderboard (plus a couple of standing-exception leagues,
+// see EXTRA_LEAGUE_NAMES in snapshot.mjs), with each league's roster +
+// point contributions, comes entirely from history.json (written every
+// ~5 min by a background GitHub Action — see .github/scripts/snapshot.mjs).
+// historyData holds every snapshot within the retention window (~95 min),
+// oldest first; the last entry is "now". Only search falls back to a live
+// API call, since history.json only tracks the Top 500 + exceptions.
 let historyData = [];
 
 let state = {
@@ -92,8 +93,15 @@ function topLeagues() {
     return latestSnapshot()?.leagues || [];
 }
 
+// Leagues shown in the ranked Top 500 table — excludes standing-exception
+// leagues (tracked even though they've dropped below the cutoff), which
+// have no meaningful position in this list.
+function rankedLeagues() {
+    return topLeagues().filter(l => !l.Extra);
+}
+
 function displayedLeagues() {
-    return state.mode === 'search' ? state.searchResults : topLeagues();
+    return state.mode === 'search' ? state.searchResults : rankedLeagues();
 }
 
 // ── Toast ──────────────────────────────────
@@ -123,18 +131,27 @@ function showLeagueDetail(name) {
     openLeagueDetail(name);
 }
 
-// A league in the tracked Top 2500 already has everything we need (roster,
-// points) sitting in memory from the latest snapshot — show it instantly,
-// no network round trip. Only fall back to a live API call for a league
-// found via search that isn't in the Top 2500.
+// A league in the tracked Top 500 (or a standing-exception league) already
+// has everything we need (roster, points) sitting in memory from the latest
+// snapshot — show it instantly, no network round trip. Only fall back to a
+// live API call for a league found via search that isn't tracked at all.
+// A tracked exception league has no meaningful array position, so its rank
+// is resolved live via binary search, same as the fully-live fallback path.
 function openLeagueDetail(name) {
     const nameLower = name.toLowerCase();
     const fromSnapshot = topLeagues().find(l => l.Name.toLowerCase() === nameLower);
 
     if (fromSnapshot) {
         ui.currentLeagueDetail = fromSnapshot;
-        ui.currentRank = topLeagues().indexOf(fromSnapshot) + 1;
-        renderLeagueDetail();
+        const rankedIdx = rankedLeagues().indexOf(fromSnapshot);
+        if (rankedIdx !== -1) {
+            ui.currentRank = rankedIdx + 1;
+            renderLeagueDetail();
+        } else {
+            ui.currentRank = undefined;
+            renderLeagueDetail();
+            resolveRank(name, fromSnapshot);
+        }
         return;
     }
     fetchLeagueDetailLive(name);
@@ -152,14 +169,14 @@ function renderLeaderboard() {
     document.getElementById('leaderboard-heading').textContent =
         state.mode === 'search'
             ? `Search Results (${state.total} match${state.total === 1 ? '' : 'es'})`
-            : 'Top 2500';
+            : 'Top 500';
 
     document.getElementById('clear-search-btn').style.display = state.mode === 'search' ? 'inline-block' : 'none';
 
     const tbody = document.getElementById('leaderboard-tbody');
     if (!list.length) {
         tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-muted)">
-          ${state.mode === 'search' ? 'No leagues matched your search.' : 'No data yet — hit <strong>🔄 Refresh</strong> to load the Top 2500.'}
+          ${state.mode === 'search' ? 'No leagues matched your search.' : 'No data yet — hit <strong>🔄 Refresh</strong> to load the Top 500.'}
         </td></tr>`;
         return;
     }
@@ -253,8 +270,9 @@ async function apiFetch(path) {
 
 // ── Point-Delta History ────────────────────
 // history.json is written by a scheduled GitHub Action (.github/workflows/
-// snapshot.yml) that snapshots the Top 2500 — with full roster + per-player
-// point contributions — every ~5 minutes. It's the only way to get real
+// snapshot.yml) that snapshots the Top 500 (plus standing exceptions) —
+// with full roster + per-player point contributions — every ~5 minutes.
+// It's the only way to get real
 // point deltas without a backend, since the PS99 API itself has no
 // historical/time-series endpoints.
 async function loadHistory() {
@@ -294,7 +312,7 @@ function renderDeltaStat(elId, detail, windowMs, toleranceMs) {
     if (!snap) { el.textContent = '—'; el.title = 'Not enough snapshot history yet'; return; }
 
     const entry = findLeagueInSnapshot(snap, detail.ID, detail.Name);
-    if (!entry) { el.textContent = '—'; el.title = 'League was outside the tracked Top 2500 at that time'; return; }
+    if (!entry) { el.textContent = '—'; el.title = 'League was outside tracking at that time'; return; }
 
     const delta   = detail.Points - entry.Points;
     const ageMin  = Math.round((Date.now() - snap.ts) / 60000);
@@ -332,8 +350,15 @@ async function refreshAll({ silent = false } = {}) {
             const stillTracked = topLeagues().find(l => l.Name.toLowerCase() === ui.currentLeagueName.toLowerCase());
             if (stillTracked) {
                 ui.currentLeagueDetail = stillTracked;
-                ui.currentRank = topLeagues().indexOf(stillTracked) + 1;
-                renderLeagueDetail();
+                const rankedIdx = rankedLeagues().indexOf(stillTracked);
+                if (rankedIdx !== -1) {
+                    ui.currentRank = rankedIdx + 1;
+                    renderLeagueDetail();
+                } else {
+                    ui.currentRank = undefined;
+                    renderLeagueDetail();
+                    resolveRank(ui.currentLeagueName, stillTracked);
+                }
             }
         }
         if (!silent) toast(`Loaded ${fmt(topLeagues().length)} leagues`, 'success');
@@ -431,8 +456,8 @@ function isUnresolvedName(entity) {
     return !!(entity && entity.UserID && entity.DisplayName === String(entity.UserID));
 }
 
-// Live fallback: a league found via search that isn't in the tracked Top
-// 2500. Fetches full detail from the API and normalizes it into the same
+// Live fallback: a league found via search that isn't tracked at all.
+// Fetches full detail from the API and normalizes it into the same
 // shape as a snapshot-sourced league (roster merged with role + points),
 // so renderLeagueDetail doesn't need to know which path it came from.
 async function fetchLeagueDetailLive(name) {
@@ -475,8 +500,10 @@ async function fetchLeagueDetailLive(name) {
 }
 
 // Find a league's exact global rank on the Points leaderboard. Only needed
-// for the live-fallback path (search results outside the Top 2500) — Top
-// 2500 leagues already know their rank directly from their snapshot index.
+// for leagues without a meaningful snapshot array position — the live
+// fallback path, and standing-exception leagues tracked below the Top 500
+// cutoff. Ranked Top 500 leagues know their rank directly from their
+// snapshot index.
 // Binary-searches leaderboard pages (each an exact, indexed slice sorted by
 // Points desc), since there's no direct "rank of X" endpoint.
 async function resolveRank(name, detail) {
