@@ -12,8 +12,6 @@ A static, browser-based league tracker for the PS99 World Cup Part 2 event.
 
 ## Live site
 
-Once GitHub Pages finishes its first deploy, the tracker is available at:
-
 `https://jojoonline83.github.io/Ps99leagueWC/`
 
 ## Running it locally
