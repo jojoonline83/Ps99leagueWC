@@ -56,23 +56,44 @@ function isUnresolvedName(entry) {
 async function resolveUsernames(userIds) {
     const map = {};
     const ROBLOX_URL = 'https://users.roblox.com/v1/users';
+    let failedBatches = 0;
 
     for (let i = 0; i < userIds.length; i += 100) {
         const batch = userIds.slice(i, i + 100);
         if (!batch.length) continue;
-        try {
-            const res = await fetch(ROBLOX_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userIds: batch, excludeBannedUsers: false }),
-                signal: AbortSignal.timeout(10000),
-            });
-            if (res.ok) {
-                const json = await res.json();
-                (json.data || []).forEach(u => { map[u.id] = u.displayName || u.name; });
+
+        let ok = false;
+        for (let attempt = 1; attempt <= 4 && !ok; attempt++) {
+            try {
+                const res = await fetch(ROBLOX_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userIds: batch, excludeBannedUsers: false }),
+                    signal: AbortSignal.timeout(10000),
+                });
+                if (res.ok) {
+                    const json = await res.json();
+                    (json.data || []).forEach(u => { map[u.id] = u.displayName || u.name; });
+                    ok = true;
+                } else if (res.status === 429) {
+                    // Rate-limited — back off longer, respecting Retry-After if present.
+                    const retryAfter = Number(res.headers.get('retry-after')) || 0;
+                    await new Promise(r => setTimeout(r, Math.max(retryAfter * 1000, 1500 * attempt)));
+                } else {
+                    await new Promise(r => setTimeout(r, 500 * attempt));
+                }
+            } catch (_) {
+                await new Promise(r => setTimeout(r, 500 * attempt));
             }
-        } catch (_) {}
+        }
+        if (!ok) failedBatches++;
+
+        // Courtesy delay between batches regardless of outcome, so we don't
+        // hammer Roblox's rate limiter across ~dozens of batches in a row.
+        await new Promise(r => setTimeout(r, 500));
     }
+
+    if (failedBatches) console.log(`resolveUsernames: ${failedBatches} batch(es) never succeeded after retries.`);
     return map;
 }
 
