@@ -1,15 +1,15 @@
 /* ═══════════════════════════════════════════
-   PS99 World Cup II — Live Leaderboard App Logic
+   PS99 World Cup II — Leagues Tracker App Logic
    ═══════════════════════════════════════════ */
 
 'use strict';
 
-document.title = 'PS99 World Cup II [v2]';
+document.title = 'PS99 World Cup II — Leagues [v3]';
 
 // ── Constants ──────────────────────────────
-const STORAGE_KEY  = 'ps99_worldcup2_v2';
-const API_BASE      = 'https://biggamesapi.io/api';
-const CORS_PROXIES  = [
+const STORAGE_KEY = 'ps99_worldcup2_v3';
+const API_BASE     = 'https://ps99.biggamesapi.io/v1';
+const CORS_PROXIES = [
     'https://corsproxy.io/?url=',
     'https://api.allorigins.win/raw?url=',
 ];
@@ -22,14 +22,17 @@ const PALETTE = [
 
 // ── State ──────────────────────────────────
 let state = {
-    leaderboard: [],   // [{id, name, color, points}] — top 200, ordered by rank
-    outside: [],       // [{id, name, color, points}] — searched clans not in top 200
+    leagues: [],       // currently displayed list — either Top 200 or search results
+    mode: 'top',       // 'top' | 'search'
+    total: 0,          // total leagues matching the current query (from API)
     lastFetched: null,
+    colorByName: {},   // stable color assignment per league name across refreshes
     nextColorIdx: 0,
 };
 
 let ui = {
-    currentTeamId: null,
+    currentLeagueName: null,
+    currentLeagueDetail: null,
 };
 
 // ── Persistence ────────────────────────────
@@ -45,10 +48,6 @@ function load() {
 }
 
 // ── Helpers ────────────────────────────────
-function uid() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
-
 function esc(str) {
     const d = document.createElement('div');
     d.appendChild(document.createTextNode(str ?? ''));
@@ -59,18 +58,18 @@ function fmt(n) {
     return (Number(n) || 0).toLocaleString();
 }
 
-function nextColor() {
-    const color = PALETTE[state.nextColorIdx % PALETTE.length];
-    state.nextColorIdx = (state.nextColorIdx + 1) % PALETTE.length;
-    return color;
+function colorFor(name) {
+    const key = name.toLowerCase();
+    if (!state.colorByName[key]) {
+        state.colorByName[key] = PALETTE[state.nextColorIdx % PALETTE.length];
+        state.nextColorIdx = (state.nextColorIdx + 1) % PALETTE.length;
+    }
+    return state.colorByName[key];
 }
 
-function findByName(list, name) {
-    return list.find(c => c.name.toLowerCase() === name.toLowerCase());
-}
-
-function getTeam(id) {
-    return state.leaderboard.find(t => t.id === id) || state.outside.find(t => t.id === id);
+function formatDate(unixSeconds) {
+    if (!unixSeconds) return '—';
+    return new Date(unixSeconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 // ── Toast ──────────────────────────────────
@@ -90,11 +89,13 @@ function showLeaderboard() {
     renderLeaderboard();
 }
 
-function showTeamDetail(teamId) {
-    ui.currentTeamId = teamId;
+function showLeagueDetail(name) {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    document.getElementById('team-detail-view').classList.add('active');
-    renderTeamDetail();
+    document.getElementById('league-detail-view').classList.add('active');
+    ui.currentLeagueName = name;
+    ui.currentLeagueDetail = null;
+    renderLeagueDetail();
+    fetchLeagueDetail(name);
 }
 
 // ── Leaderboard rendering ──────────────────
@@ -104,65 +105,96 @@ function renderLeaderboard() {
         ? `<span class="status-pill status-active">⚡ Updated ${new Date(state.lastFetched).toLocaleTimeString()}</span>`
         : '';
 
-    const outsideSection = document.getElementById('outside-section');
-    const outsideList = document.getElementById('outside-list');
-    if (state.outside.length) {
-        outsideSection.style.display = '';
-        outsideList.innerHTML = [...state.outside]
-            .sort((a, b) => b.points - a.points)
-            .map(t => `
-              <div class="manage-clan-row">
-                <div class="clan-color-dot" style="background:${t.color}"></div>
-                <span class="mcr-name" onclick="showTeamDetail('${t.id}')" style="cursor:pointer">${esc(t.name)}</span>
-                <span class="mcr-pts">${fmt(t.points)} pts</span>
-                <button class="btn-icon del" onclick="removeOutside('${t.id}')" title="Remove">🗑️</button>
-              </div>`).join('');
-    } else {
-        outsideSection.style.display = 'none';
-    }
+    document.getElementById('leaderboard-heading').textContent =
+        state.mode === 'search'
+            ? `Search Results (${state.total} match${state.total === 1 ? '' : 'es'})`
+            : 'Top 200';
+
+    document.getElementById('clear-search-btn').style.display = state.mode === 'search' ? 'inline-block' : 'none';
 
     const tbody = document.getElementById('leaderboard-tbody');
-    if (!state.leaderboard.length) {
-        tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;padding:40px;color:var(--text-muted)">
-          No data yet — hit <strong>🔄 Refresh</strong> to fetch the live top 200.
+    if (!state.leagues.length) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-muted)">
+          ${state.mode === 'search' ? 'No leagues matched your search.' : 'No data yet — hit <strong>🔄 Refresh</strong> to fetch the live Top 200.'}
         </td></tr>`;
         return;
     }
 
-    tbody.innerHTML = state.leaderboard.map((t, idx) => `
-      <tr onclick="showTeamDetail('${t.id}')" style="cursor:pointer">
+    tbody.innerHTML = state.leagues.map((l, idx) => {
+        const color = colorFor(l.Name);
+        return `
+      <tr onclick="showLeagueDetail('${esc(l.Name).replace(/'/g, "\\'")}')" style="cursor:pointer">
         <td class="player-rank">${idx + 1}</td>
-        <td class="player-name"><span class="st-team-dot" style="background:${t.color}"></span> ${esc(t.name)}</td>
-        <td class="player-points" style="color:${t.color}">${fmt(t.points)}</td>
-      </tr>`).join('');
+        <td class="player-name"><span class="st-team-dot" style="background:${color}"></span> ${esc(l.Name)}</td>
+        <td>${l.Members}/${l.MemberCapacity}</td>
+        <td class="player-points" style="color:${color}">${fmt(l.Points)}</td>
+      </tr>`;
+    }).join('');
 }
 
-function removeOutside(teamId) {
-    state.outside = state.outside.filter(t => t.id !== teamId);
-    save();
-    renderLeaderboard();
-}
+// ── League Detail ──────────────────────────
+function renderLeagueDetail() {
+    const name = ui.currentLeagueName;
+    const color = colorFor(name);
+    document.getElementById('league-detail-color-bar').style.background = color;
+    document.getElementById('league-detail-name').textContent = name;
 
-// ── Team Detail ────────────────────────────
-function renderTeamDetail() {
-    const team = getTeam(ui.currentTeamId);
-    if (!team) { showLeaderboard(); return; }
+    const rankIdx = state.leagues.findIndex(l => l.Name.toLowerCase() === name.toLowerCase());
+    document.getElementById('ld-rank').textContent = rankIdx !== -1 ? `#${rankIdx + 1}` : 'Not in current view';
 
-    const rankIdx = state.leaderboard.findIndex(t => t.id === team.id);
-    const rankText = rankIdx !== -1 ? `#${rankIdx + 1} of ${state.leaderboard.length}` : 'Outside Top 200';
+    const detail = ui.currentLeagueDetail;
+    if (!detail) {
+        document.getElementById('league-detail-sub').textContent = 'Loading…';
+        document.getElementById('ld-pts').textContent = '…';
+        document.getElementById('ld-roster').textContent = '…';
+        document.getElementById('ld-level').textContent = '…';
+        document.getElementById('roster-tbody').innerHTML =
+            `<tr><td colspan="4" style="text-align:center;padding:32px;color:var(--text-muted)">Loading roster…</td></tr>`;
+        return;
+    }
 
-    document.getElementById('team-detail-color-bar').style.background = team.color;
-    document.getElementById('team-detail-name').textContent = team.name;
-    document.getElementById('team-detail-sub').textContent = 'PS99 World Cup II';
-    document.getElementById('td-rank').textContent = rankText;
-    document.getElementById('td-pts').textContent = fmt(team.points);
+    document.getElementById('league-detail-sub').textContent = `Created ${formatDate(detail.Created)}`;
+    document.getElementById('ld-pts').textContent = fmt(detail.Points);
+    document.getElementById('ld-roster').textContent = `${(detail.Owner?.UserID ? 1 : 0) + detail.Members.length}/${detail.MemberCapacity}`;
+    document.getElementById('ld-level').textContent = detail.Level ?? '—';
+
+    const contribByUser = {};
+    (detail.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
+
+    const rows = [];
+    if (detail.Owner && detail.Owner.UserID) {
+        rows.push({
+            role: '👑 Owner',
+            name: detail.Owner.DisplayName,
+            points: contribByUser[detail.Owner.UserID] ?? 0,
+            joined: null,
+        });
+    }
+    (detail.Members || []).forEach(m => {
+        rows.push({
+            role: 'Member',
+            name: m.DisplayName,
+            points: contribByUser[m.UserID] ?? 0,
+            joined: m.JoinTime,
+        });
+    });
+
+    const tbody = document.getElementById('roster-tbody');
+    tbody.innerHTML = rows.length
+        ? rows.map(r => `
+            <tr>
+              <td>${r.role}</td>
+              <td class="player-name">${esc(r.name)}</td>
+              <td class="player-points" style="color:${color}">${fmt(r.points)}</td>
+              <td>${r.joined ? formatDate(r.joined) : '—'}</td>
+            </tr>`).join('')
+        : `<tr><td colspan="4" style="text-align:center;padding:32px;color:var(--text-muted)">No roster data.</td></tr>`;
 }
 
 // ── Live PS99 API ──────────────────────────
 async function apiFetch(path) {
     const url = `${API_BASE}${path}`;
-    const isValid = d => d && typeof d === 'object' && !d.error && !d.Error
-        && !(typeof d.message === 'string' && d.message.toLowerCase().includes('timeout'));
+    const isValid = d => d && typeof d === 'object' && d.status === 'ok';
 
     try {
         const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
@@ -177,46 +209,23 @@ async function apiFetch(path) {
     throw new Error('API unavailable – check connection or try again later');
 }
 
-function clanCurrentPoints(clanData) {
-    const battles = clanData.Battles || {};
-    const keys = Object.keys(battles);
-    const lastKey = keys[keys.length - 1];
-    const battleObj = lastKey ? battles[lastKey] : {};
-    return Number(battleObj?.Points) || 0;
-}
-
-async function loadTop200({ silent = false } = {}) {
+async function loadTopLeagues({ silent = false } = {}) {
     const btn = document.getElementById('refresh-btn');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading…'; }
 
     try {
-        const toArr = d => Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : []);
-        const page1 = await apiFetch('/clans?page=1&pageSize=100&sort=Points&sortOrder=desc');
-        let page2data = [];
-        try {
-            const p2 = await apiFetch('/clans?page=2&pageSize=100&sort=Points&sortOrder=desc');
-            page2data = toArr(p2?.data);
-        } catch (_) {}
-        const clanList = [...toArr(page1?.data), ...page2data];
-        if (!clanList.length) throw new Error('No clan data returned');
+        const page1 = await apiFetch('/leagues?page=1&pageSize=100&sort=Points&sortOrder=desc');
+        const page2 = await apiFetch('/leagues?page=2&pageSize=100&sort=Points&sortOrder=desc');
+        const leagues = [...(page1.data.leagues || []), ...(page2.data.leagues || [])];
+        if (!leagues.length) throw new Error('No league data returned');
 
-        const oldList = state.leaderboard;
-        state.leaderboard = clanList.map((entry, idx) => {
-            const name   = entry.Name || entry.name || `Clan_${idx}`;
-            const points = entry.Points || entry.points || 0;
-            const old    = findByName(oldList, name) || findByName(state.outside, name);
-            const color  = old?.color || nextColor();
-            return { id: old?.id || uid(), name, color, points };
-        });
-
-        // Drop any "outside" entries that have now appeared in the fresh top 200
-        state.outside = state.outside.filter(t => !findByName(state.leaderboard, t.name));
-
+        state.leagues = leagues;
+        state.mode = 'top';
+        state.total = page1.data.total || leagues.length;
         state.lastFetched = Date.now();
         save();
         renderLeaderboard();
-        if (ui.currentTeamId) renderTeamDetail();
-        if (!silent) toast(`Loaded top ${clanList.length} clans`, 'success');
+        if (!silent) toast(`Loaded top ${leagues.length} leagues`, 'success');
     } catch (err) {
         if (!silent) toast(err.message, 'error');
     } finally {
@@ -224,12 +233,12 @@ async function loadTop200({ silent = false } = {}) {
     }
 }
 
-async function searchClan() {
-    const input = document.getElementById('search-clan-name');
-    const name  = (input?.value || '').trim();
-    if (!name) { toast('Enter a clan name', 'error'); return; }
+async function searchLeagues() {
+    const input = document.getElementById('search-league-name');
+    const query = (input?.value || '').trim();
+    if (!query) { toast('Enter a league name', 'error'); return; }
 
-    const btn = document.getElementById('search-clan-btn');
+    const btn = document.getElementById('search-league-btn');
     const setStatus = (msg, type = '') => {
         const el = document.getElementById('search-status');
         el.className = `import-status ${type}`;
@@ -237,33 +246,17 @@ async function searchClan() {
     };
 
     btn.disabled = true;
-    setStatus(`Searching for "${name}"…`, 'loading');
+    setStatus(`Searching for "${esc(query)}"…`, 'loading');
 
     try {
-        const raw = await apiFetch(`/clan/${encodeURIComponent(name)}`);
-        if (raw.status !== 'ok' || !raw.data) throw new Error(`Clan "${name}" not found`);
-        const clanData   = raw.data;
-        const clanName   = clanData.Name || name;
-        const points     = clanCurrentPoints(clanData);
-
-        const inTop200 = findByName(state.leaderboard, clanName);
-        if (inTop200) {
-            setStatus(`✅ "${esc(clanName)}" is already in the Top 200 — click its row below to view.`, 'success');
-            input.value = '';
-            showTeamDetail(inTop200.id);
-            return;
-        }
-
-        const existing = findByName(state.outside, clanName);
-        if (existing) {
-            existing.points = points;
-        } else {
-            state.outside.push({ id: uid(), name: clanName, color: nextColor(), points });
-        }
+        const res = await apiFetch(`/leagues?search=${encodeURIComponent(query)}&page=1&pageSize=50&sort=Points&sortOrder=desc`);
+        const leagues = res.data.leagues || [];
+        state.leagues = leagues;
+        state.mode = 'search';
+        state.total = res.data.total || leagues.length;
         save();
         renderLeaderboard();
-        setStatus(`✅ Found "${esc(clanName)}" — ${fmt(points)} points, outside the Top 200.`, 'success');
-        input.value = '';
+        setStatus(leagues.length ? `✅ Found ${state.total} matching league(s).` : `No leagues found matching "${esc(query)}".`, leagues.length ? 'success' : 'error');
     } catch (err) {
         setStatus(`❌ ${err.message}`, 'error');
     } finally {
@@ -271,18 +264,42 @@ async function searchClan() {
     }
 }
 
+function clearSearch() {
+    document.getElementById('search-league-name').value = '';
+    document.getElementById('search-status').innerHTML = '';
+    if (state.mode === 'search') {
+        state.mode = 'top';
+        renderLeaderboard();
+        if (!state.leagues.length || state.total !== state.leagues.length) loadTopLeagues({ silent: true });
+    }
+}
+
+async function fetchLeagueDetail(name) {
+    try {
+        const res = await apiFetch(`/leagues/${encodeURIComponent(name)}`);
+        ui.currentLeagueDetail = res.data;
+        if (ui.currentLeagueName === name) renderLeagueDetail();
+    } catch (err) {
+        toast(err.message, 'error');
+        document.getElementById('league-detail-sub').textContent = 'Failed to load league detail.';
+    }
+}
+
 // ── Event Listeners ────────────────────────
-document.getElementById('team-back-btn').addEventListener('click', showLeaderboard);
-document.getElementById('refresh-btn').addEventListener('click', () => loadTop200({ silent: false }));
-document.getElementById('search-clan-btn').addEventListener('click', searchClan);
-document.getElementById('search-clan-name').addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); searchClan(); }
+document.getElementById('league-back-btn').addEventListener('click', showLeaderboard);
+document.getElementById('refresh-btn').addEventListener('click', () => loadTopLeagues({ silent: false }));
+document.getElementById('search-league-btn').addEventListener('click', searchLeagues);
+document.getElementById('clear-search-btn').addEventListener('click', clearSearch);
+document.getElementById('search-league-name').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); searchLeagues(); }
 });
 
 // ── Auto-Refresh ───────────────────────────
-setInterval(() => loadTop200({ silent: true }), 120_000);
+setInterval(() => {
+    if (state.mode === 'top') loadTopLeagues({ silent: true });
+}, 120_000);
 
 // ── Bootstrap ──────────────────────────────
 load();
 renderLeaderboard();
-loadTop200({ silent: state.leaderboard.length > 0 });
+loadTopLeagues({ silent: state.leagues.length > 0 });
