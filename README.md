@@ -1,14 +1,13 @@
 # PS99 World Cup II Tracker
 
-A static, browser-based league tracker for the PS99 World Cup Part 2 event.
+A static, browser-based live leaderboard for the PS99 World Cup Part 2 event.
 
 ## Features
 
-- **Groups & standings** — create groups, add teams, and get an auto-computed league table (Played / Won / Drawn / Lost / GD / Points) using standard 3-1-0 scoring.
-- **Match results** — record, edit, and delete match results; standings recompute instantly.
-- **Team pages** — click any team in a standings table to see its full match history and group rank.
-- **Live PS99 clan lookup** — look up a clan's official name/tag from the public PS99 API (`biggamesapi.io`) to use when adding a team. World Cup match results aren't published via any public API, so scores are always entered manually.
-- Everything is saved to `localStorage` in your browser — no backend, no login.
+- **Top 200 leaderboard** — automatically fetches the top 200 clans, live, straight from the official PS99 API (`biggamesapi.io`), ranked by points.
+- **Search any clan** — look up any clan by exact name even if it's ranked below #200; it shows up in a separate "Found Outside Top 200" list.
+- **Team pages** — click any clan to see its rank and points.
+- Auto-refreshes every 2 minutes, plus a manual **Refresh** button. Last-known data is cached to `localStorage` so it loads instantly, then refreshes in the background — no backend, no login.
 
 ## Live site
 
