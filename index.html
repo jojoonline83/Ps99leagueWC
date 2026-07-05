@@ -7,10 +7,10 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PS99 World Cup II Tracker</title>
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=9">
     <script>
     (function(){
-        var V = 8;
+        var V = 9;
         var k = '_ps99wc2v';
         var stored = localStorage.getItem(k);
         localStorage.setItem(k, V);
@@ -92,7 +92,7 @@
                 <div class="stat-box"><span class="stat-label">Level</span><span class="stat-value" id="ld-level"></span></div>
             </div>
             <div class="team-detail-stats" style="margin-top:16px">
-                <div class="stat-box"><span class="stat-label">Last 5m</span><span class="stat-value" id="ld-delta-5m">—</span></div>
+                <div class="stat-box"><span class="stat-label">Last 10m</span><span class="stat-value" id="ld-delta-10m">—</span></div>
                 <div class="stat-box"><span class="stat-label">Last 30m</span><span class="stat-value" id="ld-delta-30m">—</span></div>
                 <div class="stat-box"><span class="stat-label">Last 1Hr</span><span class="stat-value" id="ld-delta-1h">—</span></div>
             </div>
@@ -101,7 +101,7 @@
         <div class="players-table-container">
             <table class="players-table roster-table">
                 <thead>
-                    <tr><th>Role</th><th>Display Name</th><th>Points</th><th>Δ5m</th><th>Δ30m</th><th>Δ1Hr</th></tr>
+                    <tr><th>Role</th><th>Display Name</th><th>Points</th><th>Δ10m</th><th>Δ30m</th><th>Δ1Hr</th></tr>
                 </thead>
                 <tbody id="roster-tbody"></tbody>
             </table>
@@ -112,6 +112,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

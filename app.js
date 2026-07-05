@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v8]';
+document.title = 'PS99 World Cup II — Leagues [v9]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
@@ -198,7 +198,7 @@ function renderLeagueDetail() {
         document.getElementById('ld-pts').textContent = '…';
         document.getElementById('ld-roster').textContent = '…';
         document.getElementById('ld-level').textContent = '…';
-        ['ld-delta-5m', 'ld-delta-30m', 'ld-delta-1h'].forEach(id => document.getElementById(id).textContent = '—');
+        ['ld-delta-10m', 'ld-delta-30m', 'ld-delta-1h'].forEach(id => document.getElementById(id).textContent = '—');
         document.getElementById('roster-tbody').innerHTML =
             `<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-muted)">Loading roster…</td></tr>`;
         return;
@@ -209,7 +209,7 @@ function renderLeagueDetail() {
     document.getElementById('ld-roster').textContent = `${detail.roster.length}/${detail.MemberCapacity}`;
     document.getElementById('ld-level').textContent = detail.Level ?? '—';
 
-    renderDeltaStat('ld-delta-5m',  detail, 5  * 60_000, 3  * 60_000);
+    renderDeltaStat('ld-delta-10m', detail, 10 * 60_000, 4  * 60_000);
     renderDeltaStat('ld-delta-30m', detail, 30 * 60_000, 8  * 60_000);
     renderDeltaStat('ld-delta-1h',  detail, 60 * 60_000, 12 * 60_000);
 
@@ -217,7 +217,7 @@ function renderLeagueDetail() {
     const tbody = document.getElementById('roster-tbody');
     tbody.innerHTML = detail.roster.length
         ? detail.roster.map(p => {
-            const d5  = playerDelta(detail, p.UserID, p.Points, 5  * 60_000, 3  * 60_000);
+            const d10 = playerDelta(detail, p.UserID, p.Points, 10 * 60_000, 4  * 60_000);
             const d30 = playerDelta(detail, p.UserID, p.Points, 30 * 60_000, 8  * 60_000);
             const d1h = playerDelta(detail, p.UserID, p.Points, 60 * 60_000, 12 * 60_000);
             return `
@@ -225,7 +225,7 @@ function renderLeagueDetail() {
                 <td>${roleLabel(p.Role)}</td>
                 <td class="player-name">${esc(p.DisplayName)}</td>
                 <td class="player-points" style="color:${color}">${fmt(p.Points)}</td>
-                <td style="color:${d5.color}">${d5.text}</td>
+                <td style="color:${d10.color}">${d10.text}</td>
                 <td style="color:${d30.color}">${d30.text}</td>
                 <td style="color:${d1h.color}">${d1h.text}</td>
               </tr>`;
