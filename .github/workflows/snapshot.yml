@@ -19,20 +19,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Record snapshot
-        run: node .github/scripts/snapshot.mjs
-
-      - name: Commit and push if changed
+      - name: Record and push snapshot (retries on conflict)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add history.json
-          git diff --cached --quiet && exit 0
-          git commit -m "chore: snapshot leagues data"
-          for i in 1 2 3; do
+          for i in 1 2 3 4 5; do
+            node .github/scripts/snapshot.mjs
+            git add history.json
+            git diff --cached --quiet && exit 0
+            git commit -m "chore: snapshot leagues data"
             git push && exit 0
+            echo "Push rejected (another run pushed first) — discarding this attempt and retrying from the latest main"
+            git reset --hard HEAD~1
             git fetch origin main
-            git rebase origin/main
+            git reset --hard origin/main
           done
-          echo "::error::Failed to push snapshot after 3 attempts"
+          echo "::error::Failed to push snapshot after 5 attempts"
           exit 1
