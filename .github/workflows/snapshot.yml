@@ -58,6 +58,30 @@ jobs:
         with:
           path: '.'
 
+      # deploy-pages occasionally fails with a transient "Deployment failed,
+      # try again later" from GitHub's own backend, even though the artifact
+      # upload above succeeded — leaving the live site stuck on the last
+      # successful deploy despite newer data already being pushed. Retry a
+      # couple of times against the same uploaded artifact before giving up.
       - name: Deploy to GitHub Pages
         id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Wait before deploy retry
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 15
+
+      - name: Deploy to GitHub Pages (retry 1)
+        if: steps.deployment.outcome == 'failure'
+        id: deployment_retry1
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Wait before deploy retry 2
+        if: steps.deployment_retry1.outcome == 'failure'
+        run: sleep 30
+
+      - name: Deploy to GitHub Pages (retry 2)
+        if: steps.deployment_retry1.outcome == 'failure'
         uses: actions/deploy-pages@v4
