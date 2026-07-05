@@ -7,10 +7,10 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PS99 World Cup II Tracker</title>
-    <link rel="stylesheet" href="style.css?v=11">
+    <link rel="stylesheet" href="style.css?v=12">
     <script>
     (function(){
-        var V = 11;
+        var V = 12;
         var k = '_ps99wc2v';
         var stored = localStorage.getItem(k);
         localStorage.setItem(k, V);
@@ -92,12 +92,13 @@
                 <div class="stat-box"><span class="stat-label">Level</span><span class="stat-value" id="ld-level"></span></div>
             </div>
             <div class="team-detail-stats" style="margin-top:16px">
-                <div class="stat-box"><span class="stat-label">Last 10m</span><span class="stat-value" id="ld-delta-10m">—</span></div>
-                <div class="stat-box"><span class="stat-label">Last 30m</span><span class="stat-value" id="ld-delta-30m">—</span></div>
-                <div class="stat-box"><span class="stat-label">Last 1Hr</span><span class="stat-value" id="ld-delta-1h">—</span></div>
+                <div class="stat-box"><span class="stat-label">Last 10m</span><span class="stat-value" id="ld-delta-10m">—</span><span class="stat-asof" id="ld-delta-10m-asof"></span></div>
+                <div class="stat-box"><span class="stat-label">Last 30m</span><span class="stat-value" id="ld-delta-30m">—</span><span class="stat-asof" id="ld-delta-30m-asof"></span></div>
+                <div class="stat-box"><span class="stat-label">Last 1Hr</span><span class="stat-value" id="ld-delta-1h">—</span><span class="stat-asof" id="ld-delta-1h-asof"></span></div>
             </div>
         </div>
         <h3 class="sub-heading">Roster (up to 4 players)</h3>
+        <div class="roster-delta-note" id="roster-delta-note"></div>
         <div class="players-table-container">
             <table class="players-table roster-table">
                 <thead>
@@ -112,6 +113,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

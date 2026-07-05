@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v11]';
+document.title = 'PS99 World Cup II — Leagues [v12]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
@@ -215,7 +215,11 @@ function renderLeagueDetail() {
         document.getElementById('ld-pts').textContent = '…';
         document.getElementById('ld-roster').textContent = '…';
         document.getElementById('ld-level').textContent = '…';
-        ['ld-delta-10m', 'ld-delta-30m', 'ld-delta-1h'].forEach(id => document.getElementById(id).textContent = '—');
+        ['ld-delta-10m', 'ld-delta-30m', 'ld-delta-1h'].forEach(id => {
+            document.getElementById(id).textContent = '—';
+            document.getElementById(`${id}-asof`).textContent = '';
+        });
+        document.getElementById('roster-delta-note').textContent = '';
         document.getElementById('roster-tbody').innerHTML =
             `<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-muted)">Loading roster…</td></tr>`;
         return;
@@ -226,15 +230,24 @@ function renderLeagueDetail() {
     document.getElementById('ld-roster').textContent = `${detail.roster.length}/${detail.MemberCapacity}`;
     document.getElementById('ld-level').textContent = detail.Level ?? '—';
 
-    renderDeltaStat('ld-delta-10m', detail, 10 * 60_000, 11 * 60_000);
-    renderDeltaStat('ld-delta-30m', detail, 30 * 60_000, 8  * 60_000);
-    renderDeltaStat('ld-delta-1h',  detail, 60 * 60_000, 12 * 60_000);
+    const snap10 = renderDeltaStat('ld-delta-10m', detail, 10 * 60_000, 11 * 60_000);
+    const snap30 = renderDeltaStat('ld-delta-30m', detail, 30 * 60_000, 8  * 60_000);
+    const snap1h = renderDeltaStat('ld-delta-1h',  detail, 60 * 60_000, 12 * 60_000);
+
+    // Same snapshots the per-player Δ columns below will independently look
+    // up (same windows/tolerances), so this one line covers all of them too.
+    const noteParts = [
+        snap10 && `Δ10m ${formatAsOf(snap10)}`,
+        snap30 && `Δ30m ${formatAsOf(snap30)}`,
+        snap1h && `Δ1Hr ${formatAsOf(snap1h)}`,
+    ].filter(Boolean);
+    document.getElementById('roster-delta-note').textContent = noteParts.length ? noteParts.join(' · ') : '';
 
     const roleLabel = r => r === 'Owner' ? '👑 Owner' : 'Member';
     const tbody = document.getElementById('roster-tbody');
     tbody.innerHTML = detail.roster.length
         ? detail.roster.map(p => {
-            const d10 = playerDelta(detail, p.UserID, p.Points, 10 * 60_000, 6  * 60_000);
+            const d10 = playerDelta(detail, p.UserID, p.Points, 10 * 60_000, 11 * 60_000);
             const d30 = playerDelta(detail, p.UserID, p.Points, 30 * 60_000, 8  * 60_000);
             const d1h = playerDelta(detail, p.UserID, p.Points, 60 * 60_000, 12 * 60_000);
             return `
@@ -314,13 +327,30 @@ function findLeagueInSnapshot(snap, leagueId, leagueName) {
     return snap.leagues.find(l => l.ID === leagueId || l.Name.toLowerCase() === leagueName.toLowerCase());
 }
 
+// The current totals come from the latest snapshot (as fresh as the last
+// job run), but the comparison point for a delta is necessarily an older
+// snapshot — show its actual clock time so it's clear the delta reflects
+// data as of that run, not the current moment.
+function formatAsOf(snap) {
+    return snap ? `as of ${new Date(snap.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
+}
+
 function renderDeltaStat(elId, detail, windowMs, toleranceMs) {
     const el = document.getElementById(elId);
+    const asOfEl = document.getElementById(`${elId}-asof`);
     const snap = findSnapshotNear(windowMs, toleranceMs);
-    if (!snap) { el.textContent = '—'; el.title = 'Not enough snapshot history yet'; return; }
+    if (!snap) {
+        el.textContent = '—'; el.title = 'Not enough snapshot history yet';
+        if (asOfEl) asOfEl.textContent = '';
+        return null;
+    }
 
     const entry = findLeagueInSnapshot(snap, detail.ID, detail.Name);
-    if (!entry) { el.textContent = '—'; el.title = 'League was outside tracking at that time'; return; }
+    if (!entry) {
+        el.textContent = '—'; el.title = 'League was outside tracking at that time';
+        if (asOfEl) asOfEl.textContent = '';
+        return null;
+    }
 
     const delta   = detail.Points - entry.Points;
     const ageMin  = Math.round((Date.now() - snap.ts) / 60000);
@@ -328,6 +358,8 @@ function renderDeltaStat(elId, detail, windowMs, toleranceMs) {
     el.textContent = `${sign}${fmt(Math.abs(delta))}`;
     el.title       = `From snapshot ${ageMin}m ago`;
     el.style.color = delta > 0 ? 'var(--success)' : (delta < 0 ? 'var(--danger)' : '');
+    if (asOfEl) asOfEl.textContent = formatAsOf(snap);
+    return snap;
 }
 
 // Same idea as renderDeltaStat, but for one player inside a league's roster.
