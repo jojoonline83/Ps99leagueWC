@@ -7,6 +7,7 @@ A static, browser-based live leaderboard for the PS99 World Cup Part 2 **Leagues
 - **Top 200 leaderboard** — automatically fetches the top 200 leagues, live, ranked by points.
 - **Search any league** — search by name (prefix match) to find any league, even outside the Top 200.
 - **League detail** — click any league to see its full 4-player roster (owner + members), each player's individual point contribution, and join dates.
+- **Point deltas (Last 5m / 30m / 1Hr)** — since the PS99 API has no history endpoint, a scheduled GitHub Action (`.github/workflows/snapshot.yml`) polls the Top 200 leaderboard every 5 minutes and commits the result to `history.json`. The site reads that file to compute real point deltas over time — accurate even if no browser was open in between.
 - Auto-refreshes every 2 minutes, plus a manual **Refresh** button. Last-known data is cached to `localStorage` so it loads instantly, then refreshes in the background — no backend, no login.
 
 ## Live site

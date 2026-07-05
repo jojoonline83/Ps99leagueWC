@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v5]';
+document.title = 'PS99 World Cup II — Leagues [v6]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v3';
@@ -168,6 +168,10 @@ function renderLeagueDetail() {
     document.getElementById('ld-roster').textContent = `${(detail.Owner?.UserID ? 1 : 0) + detail.Members.length}/${detail.MemberCapacity}`;
     document.getElementById('ld-level').textContent = detail.Level ?? '—';
 
+    renderDeltaStat('ld-delta-5m',  detail, 5  * 60_000, 3  * 60_000);
+    renderDeltaStat('ld-delta-30m', detail, 30 * 60_000, 8  * 60_000);
+    renderDeltaStat('ld-delta-1h',  detail, 60 * 60_000, 12 * 60_000);
+
     const contribByUser = {};
     (detail.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
 
@@ -217,6 +221,47 @@ async function apiFetch(path) {
         } catch (_) {}
     }
     throw new Error('API unavailable – check connection or try again later');
+}
+
+// ── Point-Delta History ────────────────────
+// history.json is written by a scheduled GitHub Action (.github/workflows/
+// snapshot.yml) that snapshots the live Top 200 every ~5 minutes — it's the
+// only way to get real point deltas without a backend, since the PS99 API
+// itself has no historical/time-series endpoints.
+let historyData = [];
+
+async function loadHistory() {
+    try {
+        const res = await fetch(`history.json?t=${Date.now()}`, { signal: AbortSignal.timeout(10000) });
+        if (res.ok) historyData = await res.json();
+    } catch (_) {}
+}
+
+function findSnapshotNear(msAgo, toleranceMs) {
+    if (!historyData.length) return null;
+    const targetTs = Date.now() - msAgo;
+    let best = null, bestDiff = Infinity;
+    for (const entry of historyData) {
+        const diff = Math.abs(entry.ts - targetTs);
+        if (diff < bestDiff) { bestDiff = diff; best = entry; }
+    }
+    return best && bestDiff <= toleranceMs ? best : null;
+}
+
+function renderDeltaStat(elId, detail, windowMs, toleranceMs) {
+    const el = document.getElementById(elId);
+    const snap = findSnapshotNear(windowMs, toleranceMs);
+    if (!snap) { el.textContent = '—'; el.title = 'Not enough snapshot history yet'; return; }
+
+    const entry = snap.leagues.find(l => l.ID === detail.ID || l.Name.toLowerCase() === detail.Name.toLowerCase());
+    if (!entry) { el.textContent = '—'; el.title = 'League was outside the tracked Top 200 at that time'; return; }
+
+    const delta   = detail.Points - entry.Points;
+    const ageMin   = Math.round((Date.now() - snap.ts) / 60000);
+    const sign     = delta >= 0 ? '+' : '−';
+    el.textContent = `${sign}${fmt(Math.abs(delta))}`;
+    el.title       = `From snapshot ${ageMin}m ago`;
+    el.style.color = delta > 0 ? 'var(--success)' : (delta < 0 ? 'var(--danger)' : '');
 }
 
 async function loadTopLeagues({ silent = false } = {}) {
@@ -338,7 +383,7 @@ function isUnresolvedName(entity) {
 
 async function fetchLeagueDetail(name) {
     try {
-        const res = await apiFetch(`/leagues/${encodeURIComponent(name)}`);
+        const [res] = await Promise.all([apiFetch(`/leagues/${encodeURIComponent(name)}`), loadHistory()]);
         const detail = res.data;
 
         const needsResolve = [];
