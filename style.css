@@ -363,4 +363,5 @@ main {
     .detail-top-bar { flex-direction: column; align-items: flex-start; gap: 10px; }
     .team-detail-stats { gap: 16px; }
     .live-manual { flex-direction: column; }
+    .roster-table th, .roster-table td { padding: 8px 10px; font-size: 12px; }
 }

@@ -4,10 +4,10 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v6]';
+document.title = 'PS99 World Cup II — Leagues [v7]';
 
 // ── Constants ──────────────────────────────
-const STORAGE_KEY = 'ps99_worldcup2_v3';
+const STORAGE_KEY = 'ps99_worldcup2_v4';
 const API_BASE     = 'https://ps99.biggamesapi.io/v1';
 const CORS_PROXIES = [
     'https://corsproxy.io/?url=',
@@ -21,24 +21,33 @@ const PALETTE = [
 ];
 
 // ── State ──────────────────────────────────
+// The Top 2500 leaderboard, with each league's roster + point contributions,
+// comes entirely from history.json (written every ~5 min by a background
+// GitHub Action — see .github/scripts/snapshot.mjs). historyData holds every
+// snapshot within the retention window (~95 min), oldest first; the last
+// entry is "now". Only search falls back to a live API call, since
+// history.json only tracks the Top 2500.
+let historyData = [];
+
 let state = {
-    leagues: [],       // currently displayed list — either Top 200 or search results
-    top200: [],        // canonical Top 200, always kept fresh regardless of what's displayed
-    mode: 'top',       // 'top' | 'search'
-    total: 0,          // result count for the current query (search matches, or Top 200 length)
-    overallTotal: 0,   // total leagues across the entire leaderboard (for exact-rank lookups)
-    lastFetched: null,
-    colorByName: {},   // stable color assignment per league name across refreshes
+    mode: 'top',        // 'top' | 'search'
+    searchResults: [],
+    total: 0,
+    colorByName: {},
     nextColorIdx: 0,
 };
 
 let ui = {
     currentLeagueName: null,
-    currentLeagueDetail: null,
-    currentRank: undefined, // undefined = not yet resolved, null = resolved but unknown, number = exact rank
+    currentLeagueDetail: null, // unified shape: {ID,Name,Points,MemberCapacity,Level?,Created?,roster:[{UserID,DisplayName,Points,Role}]}
+    currentRank: undefined,    // undefined = not yet resolved, null = resolved but unknown, number = exact rank
 };
 
+let overallTotalCache = 0;
+
 // ── Persistence ────────────────────────────
+// history.json is tens of MB — never persist it to localStorage, just
+// re-fetch on load. Only small UI state is cached.
 function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
 }
@@ -75,6 +84,18 @@ function formatDate(unixSeconds) {
     return new Date(unixSeconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function latestSnapshot() {
+    return historyData.length ? historyData[historyData.length - 1] : null;
+}
+
+function topLeagues() {
+    return latestSnapshot()?.leagues || [];
+}
+
+function displayedLeagues() {
+    return state.mode === 'search' ? state.searchResults : topLeagues();
+}
+
 // ── Toast ──────────────────────────────────
 let toastTimer = null;
 function toast(msg, type = 'success') {
@@ -97,34 +118,53 @@ function showLeagueDetail(name) {
     document.getElementById('league-detail-view').classList.add('active');
     ui.currentLeagueName = name;
     ui.currentLeagueDetail = null;
-    ui.currentRank = undefined; // undefined = not yet resolved, null = resolved but unknown
+    ui.currentRank = undefined;
     renderLeagueDetail();
-    fetchLeagueDetail(name);
+    openLeagueDetail(name);
+}
+
+// A league in the tracked Top 2500 already has everything we need (roster,
+// points) sitting in memory from the latest snapshot — show it instantly,
+// no network round trip. Only fall back to a live API call for a league
+// found via search that isn't in the Top 2500.
+function openLeagueDetail(name) {
+    const nameLower = name.toLowerCase();
+    const fromSnapshot = topLeagues().find(l => l.Name.toLowerCase() === nameLower);
+
+    if (fromSnapshot) {
+        ui.currentLeagueDetail = fromSnapshot;
+        ui.currentRank = topLeagues().indexOf(fromSnapshot) + 1;
+        renderLeagueDetail();
+        return;
+    }
+    fetchLeagueDetailLive(name);
 }
 
 // ── Leaderboard rendering ──────────────────
 function renderLeaderboard() {
     const badge = document.getElementById('event-status-badge');
-    badge.innerHTML = state.lastFetched
-        ? `<span class="status-pill status-active">⚡ Updated ${new Date(state.lastFetched).toLocaleTimeString()}</span>`
+    const snap = latestSnapshot();
+    badge.innerHTML = snap
+        ? `<span class="status-pill status-active">⚡ Updated ${new Date(snap.ts).toLocaleTimeString()}</span>`
         : '';
 
+    const list = displayedLeagues();
     document.getElementById('leaderboard-heading').textContent =
         state.mode === 'search'
             ? `Search Results (${state.total} match${state.total === 1 ? '' : 'es'})`
-            : 'Top 200';
+            : 'Top 2500';
 
     document.getElementById('clear-search-btn').style.display = state.mode === 'search' ? 'inline-block' : 'none';
 
     const tbody = document.getElementById('leaderboard-tbody');
-    if (!state.leagues.length) {
+    if (!list.length) {
         tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-muted)">
-          ${state.mode === 'search' ? 'No leagues matched your search.' : 'No data yet — hit <strong>🔄 Refresh</strong> to fetch the live Top 200.'}
+          ${state.mode === 'search' ? 'No leagues matched your search.' : 'No data yet — hit <strong>🔄 Refresh</strong> to load the Top 2500.'}
         </td></tr>`;
         return;
     }
 
-    tbody.innerHTML = state.leagues.map((l, idx) => {
+    tbody.innerHTML = list.map((l, idx) => {
         const color = colorFor(l.Name);
         return `
       <tr onclick="showLeagueDetail('${esc(l.Name).replace(/'/g, "\\'")}')" style="cursor:pointer">
@@ -149,7 +189,7 @@ function renderLeagueDetail() {
     } else if (ui.currentRank === null) {
         rankEl.textContent = 'Unknown';
     } else {
-        rankEl.textContent = `#${fmt(ui.currentRank)}${state.overallTotal ? ` of ${fmt(state.overallTotal)}` : ''}`;
+        rankEl.textContent = `#${fmt(ui.currentRank)}${overallTotalCache ? ` of ${fmt(overallTotalCache)}` : ''}`;
     }
 
     const detail = ui.currentLeagueDetail;
@@ -158,51 +198,39 @@ function renderLeagueDetail() {
         document.getElementById('ld-pts').textContent = '…';
         document.getElementById('ld-roster').textContent = '…';
         document.getElementById('ld-level').textContent = '…';
+        ['ld-delta-5m', 'ld-delta-30m', 'ld-delta-1h'].forEach(id => document.getElementById(id).textContent = '—');
         document.getElementById('roster-tbody').innerHTML =
-            `<tr><td colspan="4" style="text-align:center;padding:32px;color:var(--text-muted)">Loading roster…</td></tr>`;
+            `<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-muted)">Loading roster…</td></tr>`;
         return;
     }
 
-    document.getElementById('league-detail-sub').textContent = `Created ${formatDate(detail.Created)}`;
+    document.getElementById('league-detail-sub').textContent = detail.Created ? `Created ${formatDate(detail.Created)}` : 'PS99 World Cup II';
     document.getElementById('ld-pts').textContent = fmt(detail.Points);
-    document.getElementById('ld-roster').textContent = `${(detail.Owner?.UserID ? 1 : 0) + detail.Members.length}/${detail.MemberCapacity}`;
+    document.getElementById('ld-roster').textContent = `${detail.roster.length}/${detail.MemberCapacity}`;
     document.getElementById('ld-level').textContent = detail.Level ?? '—';
 
     renderDeltaStat('ld-delta-5m',  detail, 5  * 60_000, 3  * 60_000);
     renderDeltaStat('ld-delta-30m', detail, 30 * 60_000, 8  * 60_000);
     renderDeltaStat('ld-delta-1h',  detail, 60 * 60_000, 12 * 60_000);
 
-    const contribByUser = {};
-    (detail.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
-
-    const rows = [];
-    if (detail.Owner && detail.Owner.UserID) {
-        rows.push({
-            role: '👑 Owner',
-            name: detail.Owner.DisplayName,
-            points: contribByUser[detail.Owner.UserID] ?? 0,
-            joined: null,
-        });
-    }
-    (detail.Members || []).forEach(m => {
-        rows.push({
-            role: 'Member',
-            name: m.DisplayName,
-            points: contribByUser[m.UserID] ?? 0,
-            joined: m.JoinTime,
-        });
-    });
-
+    const roleLabel = r => r === 'Owner' ? '👑 Owner' : 'Member';
     const tbody = document.getElementById('roster-tbody');
-    tbody.innerHTML = rows.length
-        ? rows.map(r => `
-            <tr>
-              <td>${r.role}</td>
-              <td class="player-name">${esc(r.name)}</td>
-              <td class="player-points" style="color:${color}">${fmt(r.points)}</td>
-              <td>${r.joined ? formatDate(r.joined) : '—'}</td>
-            </tr>`).join('')
-        : `<tr><td colspan="4" style="text-align:center;padding:32px;color:var(--text-muted)">No roster data.</td></tr>`;
+    tbody.innerHTML = detail.roster.length
+        ? detail.roster.map(p => {
+            const d5  = playerDelta(detail, p.UserID, p.Points, 5  * 60_000, 3  * 60_000);
+            const d30 = playerDelta(detail, p.UserID, p.Points, 30 * 60_000, 8  * 60_000);
+            const d1h = playerDelta(detail, p.UserID, p.Points, 60 * 60_000, 12 * 60_000);
+            return `
+              <tr>
+                <td>${roleLabel(p.Role)}</td>
+                <td class="player-name">${esc(p.DisplayName)}</td>
+                <td class="player-points" style="color:${color}">${fmt(p.Points)}</td>
+                <td style="color:${d5.color}">${d5.text}</td>
+                <td style="color:${d30.color}">${d30.text}</td>
+                <td style="color:${d1h.color}">${d1h.text}</td>
+              </tr>`;
+          }).join('')
+        : `<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--text-muted)">No roster data.</td></tr>`;
 }
 
 // ── Live PS99 API ──────────────────────────
@@ -225,16 +253,13 @@ async function apiFetch(path) {
 
 // ── Point-Delta History ────────────────────
 // history.json is written by a scheduled GitHub Action (.github/workflows/
-// snapshot.yml) that snapshots the live Top 200 every ~5 minutes — it's the
-// only way to get real point deltas without a backend, since the PS99 API
-// itself has no historical/time-series endpoints.
-let historyData = [];
-
+// snapshot.yml) that snapshots the Top 2500 — with full roster + per-player
+// point contributions — every ~5 minutes. It's the only way to get real
+// point deltas without a backend, since the PS99 API itself has no
+// historical/time-series endpoints.
 async function loadHistory() {
-    try {
-        const res = await fetch(`history.json?t=${Date.now()}`, { signal: AbortSignal.timeout(10000) });
-        if (res.ok) historyData = await res.json();
-    } catch (_) {}
+    const res = await fetch(`history.json?t=${Date.now()}`, { signal: AbortSignal.timeout(30000) });
+    if (res.ok) historyData = await res.json();
 }
 
 function findSnapshotNear(msAgo, toleranceMs) {
@@ -248,44 +273,61 @@ function findSnapshotNear(msAgo, toleranceMs) {
     return best && bestDiff <= toleranceMs ? best : null;
 }
 
+function findLeagueInSnapshot(snap, leagueId, leagueName) {
+    return snap.leagues.find(l => l.ID === leagueId || l.Name.toLowerCase() === leagueName.toLowerCase());
+}
+
 function renderDeltaStat(elId, detail, windowMs, toleranceMs) {
     const el = document.getElementById(elId);
     const snap = findSnapshotNear(windowMs, toleranceMs);
     if (!snap) { el.textContent = '—'; el.title = 'Not enough snapshot history yet'; return; }
 
-    const entry = snap.leagues.find(l => l.ID === detail.ID || l.Name.toLowerCase() === detail.Name.toLowerCase());
-    if (!entry) { el.textContent = '—'; el.title = 'League was outside the tracked Top 200 at that time'; return; }
+    const entry = findLeagueInSnapshot(snap, detail.ID, detail.Name);
+    if (!entry) { el.textContent = '—'; el.title = 'League was outside the tracked Top 2500 at that time'; return; }
 
     const delta   = detail.Points - entry.Points;
-    const ageMin   = Math.round((Date.now() - snap.ts) / 60000);
-    const sign     = delta >= 0 ? '+' : '−';
+    const ageMin  = Math.round((Date.now() - snap.ts) / 60000);
+    const sign    = delta >= 0 ? '+' : '−';
     el.textContent = `${sign}${fmt(Math.abs(delta))}`;
     el.title       = `From snapshot ${ageMin}m ago`;
     el.style.color = delta > 0 ? 'var(--success)' : (delta < 0 ? 'var(--danger)' : '');
 }
 
-async function loadTopLeagues({ silent = false } = {}) {
+// Same idea as renderDeltaStat, but for one player inside a league's roster.
+function playerDelta(detail, userId, currentPoints, windowMs, toleranceMs) {
+    const snap = findSnapshotNear(windowMs, toleranceMs);
+    if (!snap) return { text: '—', color: '' };
+
+    const league = findLeagueInSnapshot(snap, detail.ID, detail.Name);
+    const past = league?.roster?.find(p => p.UserID === userId)?.Points;
+    if (past === undefined) return { text: '—', color: '' };
+
+    const delta = currentPoints - past;
+    const sign  = delta >= 0 ? '+' : '−';
+    return {
+        text: `${sign}${fmt(Math.abs(delta))}`,
+        color: delta > 0 ? 'var(--success)' : (delta < 0 ? 'var(--danger)' : ''),
+    };
+}
+
+async function refreshAll({ silent = false } = {}) {
     const btn = document.getElementById('refresh-btn');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading…'; }
 
     try {
-        const page1 = await apiFetch('/leagues?page=1&pageSize=100&sort=Points&sortOrder=desc');
-        const page2 = await apiFetch('/leagues?page=2&pageSize=100&sort=Points&sortOrder=desc');
-        const leagues = [...(page1.data.leagues || []), ...(page2.data.leagues || [])];
-        if (!leagues.length) throw new Error('No league data returned');
-
-        state.top200 = leagues;
-        state.overallTotal = page1.data.total || leagues.length;
-        if (state.mode === 'top') {
-            state.leagues = leagues;
-            state.total = leagues.length;
+        await loadHistory();
+        if (state.mode === 'top') renderLeaderboard();
+        if (ui.currentLeagueName) {
+            const stillTracked = topLeagues().find(l => l.Name.toLowerCase() === ui.currentLeagueName.toLowerCase());
+            if (stillTracked) {
+                ui.currentLeagueDetail = stillTracked;
+                ui.currentRank = topLeagues().indexOf(stillTracked) + 1;
+                renderLeagueDetail();
+            }
         }
-        state.lastFetched = Date.now();
-        save();
-        renderLeaderboard();
-        if (!silent) toast(`Loaded top ${leagues.length} leagues`, 'success');
+        if (!silent) toast(`Loaded ${fmt(topLeagues().length)} leagues`, 'success');
     } catch (err) {
-        if (!silent) toast(err.message, 'error');
+        if (!silent) toast(err.message || 'Failed to refresh', 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
     }
@@ -309,7 +351,7 @@ async function searchLeagues() {
     try {
         const res = await apiFetch(`/leagues?search=${encodeURIComponent(query)}&page=1&pageSize=50&sort=Points&sortOrder=desc`);
         const leagues = res.data.leagues || [];
-        state.leagues = leagues;
+        state.searchResults = leagues;
         state.mode = 'search';
         state.total = res.data.total || leagues.length;
         save();
@@ -327,10 +369,7 @@ function clearSearch() {
     document.getElementById('search-status').innerHTML = '';
     if (state.mode === 'search') {
         state.mode = 'top';
-        state.leagues = state.top200;
-        state.total = state.top200.length;
         renderLeaderboard();
-        if (!state.top200.length) loadTopLeagues({ silent: true });
     }
 }
 
@@ -381,24 +420,39 @@ function isUnresolvedName(entity) {
     return !!(entity && entity.UserID && entity.DisplayName === String(entity.UserID));
 }
 
-async function fetchLeagueDetail(name) {
+// Live fallback: a league found via search that isn't in the tracked Top
+// 2500. Fetches full detail from the API and normalizes it into the same
+// shape as a snapshot-sourced league (roster merged with role + points),
+// so renderLeagueDetail doesn't need to know which path it came from.
+async function fetchLeagueDetailLive(name) {
     try {
-        const [res] = await Promise.all([apiFetch(`/leagues/${encodeURIComponent(name)}`), loadHistory()]);
-        const detail = res.data;
+        const res = await apiFetch(`/leagues/${encodeURIComponent(name)}`);
+        const raw = res.data;
 
         const needsResolve = [];
-        if (isUnresolvedName(detail.Owner)) needsResolve.push(detail.Owner.UserID);
-        (detail.Members || []).forEach(m => { if (isUnresolvedName(m)) needsResolve.push(m.UserID); });
-
+        if (isUnresolvedName(raw.Owner)) needsResolve.push(raw.Owner.UserID);
+        (raw.Members || []).forEach(m => { if (isUnresolvedName(m)) needsResolve.push(m.UserID); });
         if (needsResolve.length) {
             const resolved = await resolveUsernames([...new Set(needsResolve)]);
-            if (isUnresolvedName(detail.Owner) && resolved[detail.Owner.UserID]) {
-                detail.Owner.DisplayName = resolved[detail.Owner.UserID];
-            }
-            (detail.Members || []).forEach(m => {
-                if (isUnresolvedName(m) && resolved[m.UserID]) m.DisplayName = resolved[m.UserID];
-            });
+            if (isUnresolvedName(raw.Owner) && resolved[raw.Owner.UserID]) raw.Owner.DisplayName = resolved[raw.Owner.UserID];
+            (raw.Members || []).forEach(m => { if (isUnresolvedName(m) && resolved[m.UserID]) m.DisplayName = resolved[m.UserID]; });
         }
+
+        const contribByUser = {};
+        (raw.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
+
+        const roster = [];
+        if (raw.Owner && raw.Owner.UserID) {
+            roster.push({ UserID: raw.Owner.UserID, DisplayName: raw.Owner.DisplayName, Points: contribByUser[raw.Owner.UserID] ?? 0, Role: 'Owner' });
+        }
+        (raw.Members || []).forEach(m => {
+            roster.push({ UserID: m.UserID, DisplayName: m.DisplayName, Points: contribByUser[m.UserID] ?? 0, Role: 'Member' });
+        });
+
+        const detail = {
+            ID: raw.ID, Name: raw.Name, Points: raw.Points, MemberCapacity: raw.MemberCapacity,
+            Level: raw.Level, Created: raw.Created, roster,
+        };
 
         ui.currentLeagueDetail = detail;
         if (ui.currentLeagueName === name) renderLeagueDetail();
@@ -409,28 +463,20 @@ async function fetchLeagueDetail(name) {
     }
 }
 
-// Find a league's exact global rank on the Points leaderboard.
-// Fast path: it's already in the cached Top 200. Otherwise binary-search
-// over leaderboard pages (each page is an exact, indexed slice sorted by
+// Find a league's exact global rank on the Points leaderboard. Only needed
+// for the live-fallback path (search results outside the Top 2500) — Top
+// 2500 leagues already know their rank directly from their snapshot index.
+// Binary-searches leaderboard pages (each an exact, indexed slice sorted by
 // Points desc), since there's no direct "rank of X" endpoint.
 async function resolveRank(name, detail) {
     const nameLower = name.toLowerCase();
-
-    const top200Idx = state.top200.findIndex(l => l.NameLower === nameLower || l.Name.toLowerCase() === nameLower);
-    if (top200Idx !== -1) {
-        ui.currentRank = top200Idx + 1;
-        if (ui.currentLeagueName === name) renderLeagueDetail();
-        return;
-    }
-
     try {
         const pageSize = 100;
-        const totalRes = state.overallTotal
-            ? { data: { total: state.overallTotal } }
-            : await apiFetch('/leagues?page=1&pageSize=1&sort=Points&sortOrder=desc');
-        const total = totalRes.data.total || 0;
-        state.overallTotal = total;
-        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        if (!overallTotalCache) {
+            const totalRes = await apiFetch('/leagues?page=1&pageSize=1&sort=Points&sortOrder=desc');
+            overallTotalCache = totalRes.data.total || 0;
+        }
+        const totalPages = Math.max(1, Math.ceil(overallTotalCache / pageSize));
         const targetPoints = detail.Points;
         const matches = l => l.NameLower === nameLower || l.Name.toLowerCase() === nameLower || l.ID === detail.ID;
 
@@ -460,7 +506,7 @@ async function resolveRank(name, detail) {
 
 // ── Event Listeners ────────────────────────
 document.getElementById('league-back-btn').addEventListener('click', showLeaderboard);
-document.getElementById('refresh-btn').addEventListener('click', () => loadTopLeagues({ silent: false }));
+document.getElementById('refresh-btn').addEventListener('click', () => refreshAll({ silent: false }));
 document.getElementById('search-league-btn').addEventListener('click', searchLeagues);
 document.getElementById('clear-search-btn').addEventListener('click', clearSearch);
 document.getElementById('search-league-name').addEventListener('keydown', e => {
@@ -468,11 +514,10 @@ document.getElementById('search-league-name').addEventListener('keydown', e => {
 });
 
 // ── Auto-Refresh ───────────────────────────
-setInterval(() => {
-    if (state.mode === 'top') loadTopLeagues({ silent: true });
-}, 120_000);
+// Matches the background snapshot's own ~5 minute cadence.
+setInterval(() => refreshAll({ silent: true }), 5 * 60_000);
 
 // ── Bootstrap ──────────────────────────────
 load();
 renderLeaderboard();
-loadTopLeagues({ silent: state.leagues.length > 0 });
+refreshAll({ silent: false });

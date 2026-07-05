@@ -7,10 +7,10 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PS99 World Cup II Tracker</title>
-    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="style.css?v=7">
     <script>
     (function(){
-        var V = 6;
+        var V = 7;
         var k = '_ps99wc2v';
         var stored = localStorage.getItem(k);
         localStorage.setItem(k, V);
@@ -43,7 +43,7 @@
         <div class="event-info-bar">
             <div>
                 <div class="event-title">Leagues Leaderboard</div>
-                <div class="event-dates" id="event-dates">Live from the PS99 leagues API — teams of up to 4 players</div>
+                <div class="event-dates" id="event-dates">Top 2500, refreshed every ~5 minutes in the background — teams of up to 4 players</div>
             </div>
         </div>
 
@@ -52,7 +52,7 @@
                 <h3>🔍 Search Leagues</h3>
                 <span class="live-dot"></span>
             </div>
-            <p class="live-desc">Search any league by name (matches from the start of the name), even if it's not in the Top 200.</p>
+            <p class="live-desc">Search any league by name (matches from the start of the name), even if it's not in the Top 2500.</p>
             <div class="live-manual">
                 <input type="text" id="search-league-name" class="live-input" placeholder="Enter league name e.g. RNG">
                 <button class="btn-live-secondary" id="search-league-btn">Search</button>
@@ -61,7 +61,7 @@
             <div id="search-status" class="import-status"></div>
         </div>
 
-        <h3 class="sub-heading" id="leaderboard-heading">Top 200</h3>
+        <h3 class="sub-heading" id="leaderboard-heading">Top 2500</h3>
         <div class="players-table-container">
             <table class="players-table">
                 <thead>
@@ -99,9 +99,9 @@
         </div>
         <h3 class="sub-heading">Roster (up to 4 players)</h3>
         <div class="players-table-container">
-            <table class="players-table">
+            <table class="players-table roster-table">
                 <thead>
-                    <tr><th>Role</th><th>Display Name</th><th>Points Contributed</th><th>Joined</th></tr>
+                    <tr><th>Role</th><th>Display Name</th><th>Points</th><th>Δ5m</th><th>Δ30m</th><th>Δ1Hr</th></tr>
                 </thead>
                 <tbody id="roster-tbody"></tbody>
             </table>

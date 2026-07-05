@@ -1,31 +1,106 @@
-// Records a timestamped snapshot of the live Top 200 leagues leaderboard so
-// the static site can compute real point deltas (5m / 30m / 1hr) without a
-// backend — this script IS the backend, run on a schedule by GitHub Actions.
+// Records a timestamped snapshot of the Top 2500 leagues leaderboard,
+// including each league's full roster and per-player point contributions,
+// so the static site can compute per-league AND per-player point deltas
+// without a backend — this script IS the backend, run on a schedule.
+//
+// Retention is intentionally short (~95 minutes, just past the 1hr delta
+// window) because storing full roster detail for 2500 leagues at every
+// 5-minute tick grows fast — a longer window would make history.json far
+// too large to fetch from a static site or commit to git repeatedly.
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
-const API_BASE      = 'https://ps99.biggamesapi.io/v1';
-const HISTORY_FILE  = 'history.json';
-const RETENTION_MS  = 26 * 60 * 60 * 1000; // keep a bit over a day of snapshots
+const API_BASE           = 'https://ps99.biggamesapi.io/v1';
+const HISTORY_FILE       = 'history.json';
+const RETENTION_MS       = 95 * 60 * 1000;
+const TOP_PAGES          = 25;   // 25 pages * pageSize 100 = 2500 leagues
+const PAGE_SIZE          = 100;
+const LIST_CONCURRENCY   = 10;
+const DETAIL_CONCURRENCY = 20;
 
-async function fetchPage(page) {
-    const res = await fetch(`${API_BASE}/leagues?page=${page}&pageSize=100&sort=Points&sortOrder=desc`, {
-        signal: AbortSignal.timeout(20000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} fetching page ${page}`);
-    const json = await res.json();
-    if (json.status !== 'ok') throw new Error('API returned a non-ok status');
-    return json.data.leagues || [];
+async function fetchJson(url, attempts = 3) {
+    for (let i = 0; i < attempts; i++) {
+        try {
+            const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+            if (res.ok) {
+                const json = await res.json();
+                if (json.status === 'ok') return json;
+            }
+        } catch (_) {}
+        if (i < attempts - 1) await new Promise(r => setTimeout(r, 500 * (i + 1)));
+    }
+    return null;
 }
 
-const [page1, page2] = await Promise.all([fetchPage(1), fetchPage(2)]);
-const leagues = [...page1, ...page2].map(l => ({ ID: l.ID, Name: l.Name, Points: l.Points }));
+async function mapWithConcurrency(items, limit, fn) {
+    const results = new Array(items.length);
+    let idx = 0;
+    async function worker() {
+        while (idx < items.length) {
+            const i = idx++;
+            results[i] = await fn(items[i], i);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+}
 
-if (!leagues.length) {
+const startedAt = Date.now();
+
+// 1. Fetch the Top 2500 league summaries (list endpoint — cheap, no roster).
+const pageNums = Array.from({ length: TOP_PAGES }, (_, i) => i + 1);
+const pageResults = await mapWithConcurrency(pageNums, LIST_CONCURRENCY, async page => {
+    const json = await fetchJson(`${API_BASE}/leagues?page=${page}&pageSize=${PAGE_SIZE}&sort=Points&sortOrder=desc`);
+    return json?.data?.leagues || [];
+});
+const summaries = pageResults.flat();
+
+if (!summaries.length) {
     console.error('No league data returned — skipping this snapshot rather than recording an empty one.');
     process.exit(0);
 }
 
+// 2. Fetch full roster + point-contribution detail for every league.
+const leagues = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, async summary => {
+    const detailJson = await fetchJson(`${API_BASE}/leagues/${encodeURIComponent(summary.Name)}`);
+    const detail = detailJson?.data;
+
+    if (!detail) {
+        // Detail fetch failed after retries — keep the league-level point
+        // total from the list endpoint so its own delta still works, just
+        // without a player roster for this cycle.
+        return {
+            ID: summary.ID, Name: summary.Name, Points: summary.Points,
+            Members: summary.Members, MemberCapacity: summary.MemberCapacity,
+            roster: [],
+        };
+    }
+
+    const contribByUser = {};
+    (detail.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
+
+    const roster = [];
+    if (detail.Owner && detail.Owner.UserID) {
+        roster.push({
+            UserID: detail.Owner.UserID, DisplayName: detail.Owner.DisplayName,
+            Points: contribByUser[detail.Owner.UserID] ?? 0, Role: 'Owner',
+        });
+    }
+    (detail.Members || []).forEach(m => {
+        roster.push({
+            UserID: m.UserID, DisplayName: m.DisplayName,
+            Points: contribByUser[m.UserID] ?? 0, Role: 'Member',
+        });
+    });
+
+    return {
+        ID: detail.ID, Name: detail.Name, Points: detail.Points,
+        Members: roster.length, MemberCapacity: detail.MemberCapacity,
+        roster,
+    };
+});
+
+// 3. Append this snapshot and prune anything past the retention window.
 let history = [];
 if (existsSync(HISTORY_FILE)) {
     try { history = JSON.parse(readFileSync(HISTORY_FILE, 'utf8')); } catch (_) { history = []; }
@@ -36,4 +111,5 @@ history.push({ ts: now, leagues });
 history = history.filter(entry => now - entry.ts <= RETENTION_MS);
 
 writeFileSync(HISTORY_FILE, JSON.stringify(history));
-console.log(`Snapshot recorded: ${leagues.length} leagues this run, ${history.length} snapshots retained.`);
+const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+console.log(`Snapshot recorded: ${leagues.length} leagues with roster detail in ${elapsedSec}s, ${history.length} snapshots retained.`);
