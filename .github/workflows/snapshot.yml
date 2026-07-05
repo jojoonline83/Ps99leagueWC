@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: snapshot
@@ -15,6 +17,9 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,3 +41,19 @@ jobs:
           done
           echo "::error::Failed to push snapshot after 5 attempts"
           exit 1
+
+      # A push made with the default GITHUB_TOKEN (like the commit above)
+      # does not trigger other workflows — so deploy.yml's `on: push` never
+      # fires for these commits. Deploy inline here instead, so every fresh
+      # snapshot actually reaches the live site.
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
