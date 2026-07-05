@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v4]';
+document.title = 'PS99 World Cup II — Leagues [v5]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v3';
@@ -289,12 +289,75 @@ function clearSearch() {
     }
 }
 
+// Resolve Roblox UserIDs → display names in batches of 100, via the public
+// Roblox users API (same CORS-proxy fallback pattern as apiFetch).
+async function resolveUsernames(userIds) {
+    if (!userIds.length) return {};
+    const map = {};
+    const ROBLOX_URL = 'https://users.roblox.com/v1/users';
+
+    for (let i = 0; i < userIds.length; i += 100) {
+        const batch = userIds.slice(i, i + 100).map(Number).filter(id => id > 0);
+        if (!batch.length) continue;
+
+        const body    = JSON.stringify({ userIds: batch, excludeBannedUsers: false });
+        const headers = { 'Content-Type': 'application/json' };
+        let parsed = null;
+
+        try {
+            const res = await fetch(ROBLOX_URL, { method: 'POST', headers, body, signal: AbortSignal.timeout(8000) });
+            if (res.ok) parsed = await res.json();
+        } catch (_) {}
+        for (const proxy of CORS_PROXIES) {
+            if (parsed) break;
+            try {
+                const res = await fetch(`${proxy}${encodeURIComponent(ROBLOX_URL)}`, {
+                    method: 'POST', headers, body, signal: AbortSignal.timeout(12000),
+                });
+                if (res.ok) parsed = await res.json();
+            } catch (_) {}
+        }
+
+        if (parsed) {
+            (parsed.data || []).forEach(u => {
+                const display = u.displayName || u.name;
+                map[u.id] = display;
+                map[String(u.id)] = display;
+            });
+        }
+    }
+    return map;
+}
+
+// The PS99 API falls back to the numeric UserID (as a string) for DisplayName
+// when its own bulk Roblox resolution fails. Detect that and try resolving
+// those specific users ourselves before rendering.
+function isUnresolvedName(entity) {
+    return !!(entity && entity.UserID && entity.DisplayName === String(entity.UserID));
+}
+
 async function fetchLeagueDetail(name) {
     try {
         const res = await apiFetch(`/leagues/${encodeURIComponent(name)}`);
-        ui.currentLeagueDetail = res.data;
+        const detail = res.data;
+
+        const needsResolve = [];
+        if (isUnresolvedName(detail.Owner)) needsResolve.push(detail.Owner.UserID);
+        (detail.Members || []).forEach(m => { if (isUnresolvedName(m)) needsResolve.push(m.UserID); });
+
+        if (needsResolve.length) {
+            const resolved = await resolveUsernames([...new Set(needsResolve)]);
+            if (isUnresolvedName(detail.Owner) && resolved[detail.Owner.UserID]) {
+                detail.Owner.DisplayName = resolved[detail.Owner.UserID];
+            }
+            (detail.Members || []).forEach(m => {
+                if (isUnresolvedName(m) && resolved[m.UserID]) m.DisplayName = resolved[m.UserID];
+            });
+        }
+
+        ui.currentLeagueDetail = detail;
         if (ui.currentLeagueName === name) renderLeagueDetail();
-        resolveRank(name, res.data);
+        resolveRank(name, detail);
     } catch (err) {
         toast(err.message, 'error');
         document.getElementById('league-detail-sub').textContent = 'Failed to load league detail.';
