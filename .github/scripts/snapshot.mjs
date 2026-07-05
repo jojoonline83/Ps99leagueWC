@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const API_BASE           = 'https://ps99.biggamesapi.io/v1';
 const HISTORY_FILE       = 'history.json';
+const RESOLVED_CACHE_FILE = 'resolved_names.json';
 const RETENTION_MS       = 95 * 60 * 1000;
 const TOP_PAGES          = 5;    // 5 pages * pageSize 100 = 500 leagues
 const PAGE_SIZE          = 100;
@@ -192,15 +193,35 @@ const rankedLeagues = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, as
 const leagues = rankedLeagues.concat(extraLeagues);
 
 // 3. Resolve any numeric-fallback display names across all rosters.
+// Roblox's bulk-users endpoint throttles hard enough that resolving the
+// same ~1000+ recurring players from scratch every 5-minute cycle left
+// roughly half permanently stuck on numeric names. A persistent cache
+// (committed alongside history.json) means only genuinely new users need
+// a live lookup each cycle, so the backlog actually clears over time
+// instead of restarting from zero every run.
+let resolvedCache = {};
+if (existsSync(RESOLVED_CACHE_FILE)) {
+    try { resolvedCache = JSON.parse(readFileSync(RESOLVED_CACHE_FILE, 'utf8')); } catch (_) { resolvedCache = {}; }
+}
+
 const needsResolve = new Set();
-leagues.forEach(l => l.roster.forEach(p => { if (isUnresolvedName(p)) needsResolve.add(p.UserID); }));
+leagues.forEach(l => l.roster.forEach(p => {
+    if (!isUnresolvedName(p)) return;
+    if (resolvedCache[p.UserID]) { p.DisplayName = resolvedCache[p.UserID]; return; }
+    needsResolve.add(p.UserID);
+}));
+
 if (needsResolve.size) {
     const resolved = await resolveUsernames([...needsResolve]);
     leagues.forEach(l => l.roster.forEach(p => {
         if (isUnresolvedName(p) && resolved[p.UserID]) p.DisplayName = resolved[p.UserID];
     }));
-    console.log(`Resolved ${Object.keys(resolved).length}/${needsResolve.size} numeric-fallback display names.`);
+    Object.assign(resolvedCache, resolved);
+    console.log(`Resolved ${Object.keys(resolved).length}/${needsResolve.size} new numeric-fallback display names (${Object.keys(resolvedCache).length} cached total).`);
 }
+// Written unconditionally (even with no new resolutions) so the file always
+// exists after the first run — the workflow's `git add` expects it to.
+writeFileSync(RESOLVED_CACHE_FILE, JSON.stringify(resolvedCache));
 
 // 4. Append this snapshot and prune anything past the retention window.
 let history = [];
