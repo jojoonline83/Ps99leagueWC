@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v10]';
+document.title = 'PS99 World Cup II — Leagues [v11]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
@@ -226,7 +226,7 @@ function renderLeagueDetail() {
     document.getElementById('ld-roster').textContent = `${detail.roster.length}/${detail.MemberCapacity}`;
     document.getElementById('ld-level').textContent = detail.Level ?? '—';
 
-    renderDeltaStat('ld-delta-10m', detail, 10 * 60_000, 4  * 60_000);
+    renderDeltaStat('ld-delta-10m', detail, 10 * 60_000, 11 * 60_000);
     renderDeltaStat('ld-delta-30m', detail, 30 * 60_000, 8  * 60_000);
     renderDeltaStat('ld-delta-1h',  detail, 60 * 60_000, 12 * 60_000);
 
@@ -234,7 +234,7 @@ function renderLeagueDetail() {
     const tbody = document.getElementById('roster-tbody');
     tbody.innerHTML = detail.roster.length
         ? detail.roster.map(p => {
-            const d10 = playerDelta(detail, p.UserID, p.Points, 10 * 60_000, 4  * 60_000);
+            const d10 = playerDelta(detail, p.UserID, p.Points, 10 * 60_000, 6  * 60_000);
             const d30 = playerDelta(detail, p.UserID, p.Points, 30 * 60_000, 8  * 60_000);
             const d1h = playerDelta(detail, p.UserID, p.Points, 60 * 60_000, 12 * 60_000);
             return `
@@ -291,10 +291,18 @@ function hasRosterData(entry) {
 }
 
 function findSnapshotNear(msAgo, toleranceMs) {
-    if (!historyData.length) return null;
+    if (historyData.length < 2) return null;
+    // The current values being compared against always come from the latest
+    // snapshot, so it must never be a candidate match here — otherwise, once
+    // the real snapshot cadence drifts close to the window size (as happened
+    // when it settled around ~10 minutes), "closest to N minutes ago" can
+    // resolve to the latest snapshot itself, comparing current data against
+    // current data and showing a spurious +0 for every league and player.
+    const latest = historyData[historyData.length - 1];
     const targetTs = Date.now() - msAgo;
     let best = null, bestDiff = Infinity;
     for (const entry of historyData) {
+        if (entry === latest) continue;
         if (!hasRosterData(entry)) continue;
         const diff = Math.abs(entry.ts - targetTs);
         if (diff < bestDiff) { bestDiff = diff; best = entry; }
