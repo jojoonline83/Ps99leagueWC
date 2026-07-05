@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v3]';
+document.title = 'PS99 World Cup II — Leagues [v4]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v3';
@@ -23,8 +23,10 @@ const PALETTE = [
 // ── State ──────────────────────────────────
 let state = {
     leagues: [],       // currently displayed list — either Top 200 or search results
+    top200: [],        // canonical Top 200, always kept fresh regardless of what's displayed
     mode: 'top',       // 'top' | 'search'
-    total: 0,          // total leagues matching the current query (from API)
+    total: 0,          // result count for the current query (search matches, or Top 200 length)
+    overallTotal: 0,   // total leagues across the entire leaderboard (for exact-rank lookups)
     lastFetched: null,
     colorByName: {},   // stable color assignment per league name across refreshes
     nextColorIdx: 0,
@@ -33,6 +35,7 @@ let state = {
 let ui = {
     currentLeagueName: null,
     currentLeagueDetail: null,
+    currentRank: undefined, // undefined = not yet resolved, null = resolved but unknown, number = exact rank
 };
 
 // ── Persistence ────────────────────────────
@@ -94,6 +97,7 @@ function showLeagueDetail(name) {
     document.getElementById('league-detail-view').classList.add('active');
     ui.currentLeagueName = name;
     ui.currentLeagueDetail = null;
+    ui.currentRank = undefined; // undefined = not yet resolved, null = resolved but unknown
     renderLeagueDetail();
     fetchLeagueDetail(name);
 }
@@ -139,8 +143,14 @@ function renderLeagueDetail() {
     document.getElementById('league-detail-color-bar').style.background = color;
     document.getElementById('league-detail-name').textContent = name;
 
-    const rankIdx = state.leagues.findIndex(l => l.Name.toLowerCase() === name.toLowerCase());
-    document.getElementById('ld-rank').textContent = rankIdx !== -1 ? `#${rankIdx + 1}` : 'Not in current view';
+    const rankEl = document.getElementById('ld-rank');
+    if (ui.currentRank === undefined) {
+        rankEl.textContent = 'Calculating…';
+    } else if (ui.currentRank === null) {
+        rankEl.textContent = 'Unknown';
+    } else {
+        rankEl.textContent = `#${fmt(ui.currentRank)}${state.overallTotal ? ` of ${fmt(state.overallTotal)}` : ''}`;
+    }
 
     const detail = ui.currentLeagueDetail;
     if (!detail) {
@@ -219,9 +229,12 @@ async function loadTopLeagues({ silent = false } = {}) {
         const leagues = [...(page1.data.leagues || []), ...(page2.data.leagues || [])];
         if (!leagues.length) throw new Error('No league data returned');
 
-        state.leagues = leagues;
-        state.mode = 'top';
-        state.total = page1.data.total || leagues.length;
+        state.top200 = leagues;
+        state.overallTotal = page1.data.total || leagues.length;
+        if (state.mode === 'top') {
+            state.leagues = leagues;
+            state.total = leagues.length;
+        }
         state.lastFetched = Date.now();
         save();
         renderLeaderboard();
@@ -269,8 +282,10 @@ function clearSearch() {
     document.getElementById('search-status').innerHTML = '';
     if (state.mode === 'search') {
         state.mode = 'top';
+        state.leagues = state.top200;
+        state.total = state.top200.length;
         renderLeaderboard();
-        if (!state.leagues.length || state.total !== state.leagues.length) loadTopLeagues({ silent: true });
+        if (!state.top200.length) loadTopLeagues({ silent: true });
     }
 }
 
@@ -279,10 +294,60 @@ async function fetchLeagueDetail(name) {
         const res = await apiFetch(`/leagues/${encodeURIComponent(name)}`);
         ui.currentLeagueDetail = res.data;
         if (ui.currentLeagueName === name) renderLeagueDetail();
+        resolveRank(name, res.data);
     } catch (err) {
         toast(err.message, 'error');
         document.getElementById('league-detail-sub').textContent = 'Failed to load league detail.';
     }
+}
+
+// Find a league's exact global rank on the Points leaderboard.
+// Fast path: it's already in the cached Top 200. Otherwise binary-search
+// over leaderboard pages (each page is an exact, indexed slice sorted by
+// Points desc), since there's no direct "rank of X" endpoint.
+async function resolveRank(name, detail) {
+    const nameLower = name.toLowerCase();
+
+    const top200Idx = state.top200.findIndex(l => l.NameLower === nameLower || l.Name.toLowerCase() === nameLower);
+    if (top200Idx !== -1) {
+        ui.currentRank = top200Idx + 1;
+        if (ui.currentLeagueName === name) renderLeagueDetail();
+        return;
+    }
+
+    try {
+        const pageSize = 100;
+        const totalRes = state.overallTotal
+            ? { data: { total: state.overallTotal } }
+            : await apiFetch('/leagues?page=1&pageSize=1&sort=Points&sortOrder=desc');
+        const total = totalRes.data.total || 0;
+        state.overallTotal = total;
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const targetPoints = detail.Points;
+        const matches = l => l.NameLower === nameLower || l.Name.toLowerCase() === nameLower || l.ID === detail.ID;
+
+        let lo = 1, hi = totalPages, rank = null;
+        while (lo <= hi) {
+            const mid = Math.floor((lo + hi) / 2);
+            const res = await apiFetch(`/leagues?page=${mid}&pageSize=${pageSize}&sort=Points&sortOrder=desc`);
+            const pageLeagues = res.data.leagues || [];
+            if (!pageLeagues.length) { hi = mid - 1; continue; }
+
+            const idx = pageLeagues.findIndex(matches);
+            if (idx !== -1) { rank = (mid - 1) * pageSize + idx + 1; break; }
+
+            const firstPts = pageLeagues[0].Points;
+            const lastPts = pageLeagues[pageLeagues.length - 1].Points;
+            if (targetPoints > firstPts) hi = mid - 1;
+            else if (targetPoints < lastPts) lo = mid + 1;
+            else break; // points tie at a page boundary and name didn't match on this page — give up cleanly
+        }
+
+        ui.currentRank = rank;
+    } catch (_) {
+        ui.currentRank = null;
+    }
+    if (ui.currentLeagueName === name) renderLeagueDetail();
 }
 
 // ── Event Listeners ────────────────────────
