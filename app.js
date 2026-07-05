@@ -262,11 +262,22 @@ async function loadHistory() {
     if (res.ok) historyData = await res.json();
 }
 
+// Older snapshots recorded before roster tracking was added only have
+// league-level Points, no per-player roster. Skip those here so league-level
+// and player-level deltas always draw from the same pool of snapshots —
+// otherwise a league's own delta could show a real number while every
+// player in it still shows "—", which reads as broken even though it's
+// just an artifact of when each kind of data started being tracked.
+function hasRosterData(entry) {
+    return entry.leagues.length === 0 || entry.leagues[0].roster !== undefined;
+}
+
 function findSnapshotNear(msAgo, toleranceMs) {
     if (!historyData.length) return null;
     const targetTs = Date.now() - msAgo;
     let best = null, bestDiff = Infinity;
     for (const entry of historyData) {
+        if (!hasRosterData(entry)) continue;
         const diff = Math.abs(entry.ts - targetTs);
         if (diff < bestDiff) { bestDiff = diff; best = entry; }
     }
