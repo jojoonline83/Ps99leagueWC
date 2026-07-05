@@ -45,6 +45,37 @@ async function mapWithConcurrency(items, limit, fn) {
     return results;
 }
 
+// The PS99 API falls back to the numeric UserID (as a string) for DisplayName
+// when its own bulk Roblox resolution fails. Resolve those specific users
+// ourselves through Roblox's public users API before writing the snapshot,
+// in batches of 100 (that endpoint's max per request).
+function isUnresolvedName(entry) {
+    return entry.DisplayName === String(entry.UserID);
+}
+
+async function resolveUsernames(userIds) {
+    const map = {};
+    const ROBLOX_URL = 'https://users.roblox.com/v1/users';
+
+    for (let i = 0; i < userIds.length; i += 100) {
+        const batch = userIds.slice(i, i + 100);
+        if (!batch.length) continue;
+        try {
+            const res = await fetch(ROBLOX_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userIds: batch, excludeBannedUsers: false }),
+                signal: AbortSignal.timeout(10000),
+            });
+            if (res.ok) {
+                const json = await res.json();
+                (json.data || []).forEach(u => { map[u.id] = u.displayName || u.name; });
+            }
+        } catch (_) {}
+    }
+    return map;
+}
+
 const startedAt = Date.now();
 
 // 1. Fetch the Top 2500 league summaries (list endpoint — cheap, no roster).
@@ -100,7 +131,18 @@ const leagues = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, async su
     };
 });
 
-// 3. Append this snapshot and prune anything past the retention window.
+// 3. Resolve any numeric-fallback display names across all rosters.
+const needsResolve = new Set();
+leagues.forEach(l => l.roster.forEach(p => { if (isUnresolvedName(p)) needsResolve.add(p.UserID); }));
+if (needsResolve.size) {
+    const resolved = await resolveUsernames([...needsResolve]);
+    leagues.forEach(l => l.roster.forEach(p => {
+        if (isUnresolvedName(p) && resolved[p.UserID]) p.DisplayName = resolved[p.UserID];
+    }));
+    console.log(`Resolved ${Object.keys(resolved).length}/${needsResolve.size} numeric-fallback display names.`);
+}
+
+// 4. Append this snapshot and prune anything past the retention window.
 let history = [];
 if (existsSync(HISTORY_FILE)) {
     try { history = JSON.parse(readFileSync(HISTORY_FILE, 'utf8')); } catch (_) { history = []; }
