@@ -340,24 +340,38 @@ const snap10 = findMonitorSnapshotNear(10 * 60_000, 11 * 60_000);
 const snap30 = findMonitorSnapshotNear(30 * 60_000, 8  * 60_000);
 const snap1h = findMonitorSnapshotNear(60 * 60_000, 12 * 60_000);
 
+// Escalating reminders: each window (10m/30m/1h) is checked and alerted
+// independently, rather than waiting for all three to agree before ever
+// saying anything. A player who's just gone quiet gets flagged within
+// ~10 minutes; if they're still flat 30 minutes in, and still flat a full
+// hour in, that's a separate follow-up alert each time — not a repeat of
+// the same message every cycle. Each window's alert re-arms on its own
+// the moment that window shows real movement again.
 for (const name of MONITOR_LEAGUE_NAMES) {
     const currentRoster = monitorLeagues[name]?.roster;
     if (!currentRoster) continue; // league not found/fetchable this cycle
 
+    const findPast = (snap, userId) => snap?.leagues?.[name]?.roster?.find(p => p.UserID === userId)?.Points;
+
     for (const player of currentRoster) {
-        const key = `${name}:${player.UserID}`;
-        if (!snap10 || !snap30 || !snap1h) continue; // not enough history yet
+        const windows = [
+            { label: '10m', snap: snap10 },
+            { label: '30m', snap: snap30 },
+            { label: '1h',  snap: snap1h },
+        ];
+        for (const w of windows) {
+            if (!w.snap) continue; // not enough history yet for this window
+            const past = findPast(w.snap, player.UserID);
+            if (past == null) continue; // player wasn't tracked that far back yet
 
-        const findPast = snap => snap.leagues?.[name]?.roster?.find(p => p.UserID === player.UserID)?.Points;
-        const p10 = findPast(snap10), p30 = findPast(snap30), p1h = findPast(snap1h);
-        if (p10 == null || p30 == null || p1h == null) continue; // player wasn't tracked that far back yet
-
-        const isStalled = player.Points - p10 === 0 && player.Points - p30 === 0 && player.Points - p1h === 0;
-        if (isStalled && !alertState[key]) {
-            await sendDiscordAlert(`⚠️ **${player.DisplayName}** in **${name}** has earned 0 points over the last 10m, 30m, and 1h — possibly disconnected (currently ${player.Points.toLocaleString()} pts).`);
-            alertState[key] = true;
-        } else if (!isStalled) {
-            alertState[key] = false;
+            const key = `${name}:${player.UserID}:${w.label}`;
+            const isStalled = player.Points - past === 0;
+            if (isStalled && !alertState[key]) {
+                await sendDiscordAlert(`⚠️ **${player.DisplayName}** in **${name}** has earned 0 points over the last ${w.label} — possibly disconnected (currently ${player.Points.toLocaleString()} pts).`);
+                alertState[key] = true;
+            } else if (!isStalled) {
+                alertState[key] = false;
+            }
         }
     }
 }
