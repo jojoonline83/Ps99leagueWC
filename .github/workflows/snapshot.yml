@@ -29,12 +29,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Record and push snapshot (retries on conflict)
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           for i in 1 2 3 4 5; do
             node .github/scripts/snapshot.mjs
-            git add history.json resolved_names.json
+            git add history.json resolved_names.json .github/monitor-data
             git diff --cached --quiet && exit 0
             git commit -m "chore: snapshot leagues data"
             git push && exit 0

@@ -11,8 +11,13 @@
 // window) because storing full roster detail for every league at every
 // 5-minute tick grows fast — a longer window would make history.json far
 // too large to fetch from a static site or commit to git repeatedly.
+//
+// A separate, lower-key monitoring pass (see MONITOR_LEAGUE_NAMES) watches a
+// handful of leagues purely on the backend — never exposed to the site or
+// history.json — and posts a Discord alert if one goes completely inactive
+// (zero point gain across the 10m/30m/1h windows at once).
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 
 const API_BASE           = 'https://ps99.biggamesapi.io/v1';
 const HISTORY_FILE       = 'history.json';
@@ -23,6 +28,15 @@ const PAGE_SIZE          = 100;
 const LIST_CONCURRENCY   = 10;
 const DETAIL_CONCURRENCY = 20;
 const EXTRA_LEAGUE_NAMES = ['jj02', 'woot', 'wint2']; // always tracked, even if outside the Top 500
+
+// Backend-only inactivity monitoring — not shown on the site. Lives under
+// .github/ (rather than the repo root, which is the Pages deploy root)
+// specifically so it's never uploaded as a fetchable static file.
+const MONITOR_LEAGUE_NAMES = ['jj02', 'abwk', 'woot', 'wint1', 'wint2'];
+const MONITOR_DIR          = '.github/monitor-data';
+const MONITOR_HISTORY_FILE = `${MONITOR_DIR}/monitor_history.json`;
+const MONITOR_STATE_FILE   = `${MONITOR_DIR}/monitor_alert_state.json`;
+const DISCORD_WEBHOOK_URL  = process.env.DISCORD_WEBHOOK_URL;
 
 async function fetchJson(url, attempts = 3) {
     for (let i = 0; i < attempts; i++) {
@@ -85,6 +99,23 @@ function buildLeagueFromDetail(detail, extra) {
         Members: roster.length, MemberCapacity: detail.MemberCapacity,
         roster, ...(extra ? { Extra: true } : {}),
     };
+}
+
+async function sendDiscordAlert(message) {
+    if (!DISCORD_WEBHOOK_URL) {
+        console.log(`Discord webhook not configured — would have alerted: ${message}`);
+        return;
+    }
+    try {
+        await fetch(DISCORD_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: message }),
+            signal: AbortSignal.timeout(10000),
+        });
+    } catch (err) {
+        console.log(`Discord alert failed: ${err.message}`);
+    }
 }
 
 async function resolveUsernames(userIds) {
@@ -259,3 +290,64 @@ history = history.filter(entry => now - entry.ts <= RETENTION_MS);
 writeFileSync(HISTORY_FILE, JSON.stringify(history));
 const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
 console.log(`Snapshot recorded: ${leagues.length} leagues with roster detail in ${elapsedSec}s, ${history.length} snapshots retained.`);
+
+// 5. Backend-only inactivity monitoring for MONITOR_LEAGUE_NAMES. Reuses
+// Points already fetched above for anything already tracked (Top 500 or a
+// standing exception); only names not otherwise seen this cycle get a
+// dedicated lightweight fetch. Kept in its own file, never read by the site.
+mkdirSync(MONITOR_DIR, { recursive: true });
+const monitorPoints = {};
+for (const name of MONITOR_LEAGUE_NAMES) {
+    const already = leagues.find(l => l.Name.toLowerCase() === name.toLowerCase());
+    if (already) {
+        monitorPoints[name] = already.Points;
+        continue;
+    }
+    const json = await fetchJson(`${API_BASE}/leagues/${encodeURIComponent(name)}`);
+    monitorPoints[name] = json?.data?.Points ?? null;
+}
+
+let monitorHistory = [];
+if (existsSync(MONITOR_HISTORY_FILE)) {
+    try { monitorHistory = JSON.parse(readFileSync(MONITOR_HISTORY_FILE, 'utf8')); } catch (_) { monitorHistory = []; }
+}
+const pastMonitorHistory = monitorHistory.filter(entry => now - entry.ts <= RETENTION_MS);
+monitorHistory = [...pastMonitorHistory, { ts: now, points: monitorPoints }];
+writeFileSync(MONITOR_HISTORY_FILE, JSON.stringify(monitorHistory));
+
+function findMonitorSnapshotNear(msAgo, toleranceMs) {
+    const targetTs = now - msAgo;
+    let best = null, bestDiff = Infinity;
+    for (const entry of pastMonitorHistory) {
+        const diff = Math.abs(entry.ts - targetTs);
+        if (diff < bestDiff) { bestDiff = diff; best = entry; }
+    }
+    return best && bestDiff <= toleranceMs ? best : null;
+}
+
+let alertState = {};
+if (existsSync(MONITOR_STATE_FILE)) {
+    try { alertState = JSON.parse(readFileSync(MONITOR_STATE_FILE, 'utf8')); } catch (_) { alertState = {}; }
+}
+
+for (const name of MONITOR_LEAGUE_NAMES) {
+    const current = monitorPoints[name];
+    if (current == null) continue; // league not found this cycle
+
+    const snap10 = findMonitorSnapshotNear(10 * 60_000, 11 * 60_000);
+    const snap30 = findMonitorSnapshotNear(30 * 60_000, 8  * 60_000);
+    const snap1h = findMonitorSnapshotNear(60 * 60_000, 12 * 60_000);
+    if (!snap10 || !snap30 || !snap1h) continue; // not enough history yet
+
+    const p10 = snap10.points[name], p30 = snap30.points[name], p1h = snap1h.points[name];
+    if (p10 == null || p30 == null || p1h == null) continue;
+
+    const isStalled = current - p10 === 0 && current - p30 === 0 && current - p1h === 0;
+    if (isStalled && !alertState[name]) {
+        await sendDiscordAlert(`⚠️ **${name}** has earned 0 points over the last 10m, 30m, and 1h (currently ${current.toLocaleString()} pts).`);
+        alertState[name] = true;
+    } else if (!isStalled) {
+        alertState[name] = false;
+    }
+}
+writeFileSync(MONITOR_STATE_FILE, JSON.stringify(alertState));
