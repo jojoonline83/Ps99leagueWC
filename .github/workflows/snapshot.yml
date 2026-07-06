@@ -8,6 +8,11 @@ on:
   # before they ever executed — leaving history.json stale for many cycles
   # in a row. workflow_dispatch only, so every trigger actually gets to run.
   workflow_dispatch:
+    inputs:
+      test_discord_alert:
+        description: 'Send a one-off test Discord alert and exit (skips the actual snapshot)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -31,6 +36,7 @@ jobs:
       - name: Record and push snapshot (retries on conflict)
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TEST_DISCORD_ALERT: ${{ github.event.inputs.test_discord_alert }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -172,6 +172,14 @@ async function resolveUsernames(userIds) {
     return map;
 }
 
+// Manual test mode: verify the Discord webhook is wired up correctly
+// without running (or waiting for) a real snapshot cycle.
+if (process.env.TEST_DISCORD_ALERT === 'true') {
+    await sendDiscordAlert('✅ Test alert from PS99 League Tracker — if you can see this, Discord notifications are working correctly.');
+    console.log('Test Discord alert sent (or logged, if DISCORD_WEBHOOK_URL is not configured).');
+    process.exit(0);
+}
+
 const startedAt = Date.now();
 
 // 1. Fetch the Top 500 league summaries (list endpoint — cheap, no roster).
