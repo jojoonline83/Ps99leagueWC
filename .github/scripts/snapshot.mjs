@@ -172,15 +172,38 @@ for (const extraName of EXTRA_LEAGUE_NAMES) {
     extraLeagues.push(buildLeagueFromDetail(detail, true));
 }
 
+// The detail endpoint has occasionally returned stale/reset data for a
+// league — all its points and every player's contribution suddenly far
+// below what the list endpoint (moments earlier, same cycle) just reported,
+// even though real point totals only ever grow here. That silently produces
+// a league sitting at its correct (list-sorted) rank position while showing
+// wildly wrong points/roster. A >10% shortfall vs the list's own figure is
+// treated as suspicious.
+function looksSuspicious(detail, summary) {
+    return typeof summary.Points === 'number' && summary.Points > 0 && detail.Points < summary.Points * 0.9;
+}
+
 // 2. Fetch full roster + point-contribution detail for every Top 500 league.
 const rankedLeagues = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, async summary => {
     const detailJson = await fetchJson(`${API_BASE}/leagues/${encodeURIComponent(summary.Name)}`);
-    const detail = detailJson?.data;
+    let detail = detailJson?.data;
+
+    if (detail && looksSuspicious(detail, summary)) {
+        const retryJson = await fetchJson(`${API_BASE}/leagues/${encodeURIComponent(summary.Name)}`);
+        const retryDetail = retryJson?.data;
+        if (retryDetail && !looksSuspicious(retryDetail, summary)) {
+            detail = retryDetail;
+        } else {
+            console.log(`Suspicious detail data for "${summary.Name}" (list: ${summary.Points}, detail: ${detail.Points}) — keeping list-level Points, dropping roster for this cycle.`);
+            detail = null;
+        }
+    }
 
     if (!detail) {
-        // Detail fetch failed after retries — keep the league-level point
-        // total from the list endpoint so its own delta still works, just
-        // without a player roster for this cycle.
+        // Detail fetch failed (or looked untrustworthy) after retries — keep
+        // the league-level point total from the list endpoint so its own
+        // delta still works and rank stays consistent, just without a
+        // player roster for this cycle.
         return {
             ID: summary.ID, Name: summary.Name, Points: summary.Points,
             Members: summary.Members, MemberCapacity: summary.MemberCapacity,
