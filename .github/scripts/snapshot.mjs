@@ -13,9 +13,11 @@
 // too large to fetch from a static site or commit to git repeatedly.
 //
 // A separate, lower-key monitoring pass (see MONITOR_LEAGUE_NAMES) watches a
-// handful of leagues purely on the backend — never exposed to the site or
-// history.json — and posts a Discord alert if one goes completely inactive
-// (zero point gain across the 10m/30m/1h windows at once).
+// handful of leagues' individual players purely on the backend — never
+// exposed to the site or history.json — and posts a Discord alert if a
+// player goes completely inactive (zero point gain across the 10m/30m/1h
+// windows at once), e.g. to catch someone who's disconnected even while
+// their league's total keeps climbing from other members.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 
@@ -291,20 +293,24 @@ writeFileSync(HISTORY_FILE, JSON.stringify(history));
 const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
 console.log(`Snapshot recorded: ${leagues.length} leagues with roster detail in ${elapsedSec}s, ${history.length} snapshots retained.`);
 
-// 5. Backend-only inactivity monitoring for MONITOR_LEAGUE_NAMES. Reuses
-// Points already fetched above for anything already tracked (Top 500 or a
+// 5. Backend-only PLAYER-level inactivity monitoring for MONITOR_LEAGUE_NAMES.
+// The point is to catch an individual player who's gone quiet (e.g.
+// disconnected) even while their league's total keeps climbing from other
+// members — a league-total check alone would miss that. Reuses the full
+// roster already fetched above for anything already tracked (Top 500 or a
 // standing exception); only names not otherwise seen this cycle get a
-// dedicated lightweight fetch. Kept in its own file, never read by the site.
+// dedicated fetch. Kept in its own file, never read by the site.
 mkdirSync(MONITOR_DIR, { recursive: true });
-const monitorPoints = {};
+const monitorLeagues = {};
 for (const name of MONITOR_LEAGUE_NAMES) {
     const already = leagues.find(l => l.Name.toLowerCase() === name.toLowerCase());
     if (already) {
-        monitorPoints[name] = already.Points;
+        monitorLeagues[name] = { roster: already.roster };
         continue;
     }
     const json = await fetchJson(`${API_BASE}/leagues/${encodeURIComponent(name)}`);
-    monitorPoints[name] = json?.data?.Points ?? null;
+    const detail = json?.data;
+    monitorLeagues[name] = detail ? { roster: buildLeagueFromDetail(detail, false).roster } : null;
 }
 
 let monitorHistory = [];
@@ -312,7 +318,7 @@ if (existsSync(MONITOR_HISTORY_FILE)) {
     try { monitorHistory = JSON.parse(readFileSync(MONITOR_HISTORY_FILE, 'utf8')); } catch (_) { monitorHistory = []; }
 }
 const pastMonitorHistory = monitorHistory.filter(entry => now - entry.ts <= RETENTION_MS);
-monitorHistory = [...pastMonitorHistory, { ts: now, points: monitorPoints }];
+monitorHistory = [...pastMonitorHistory, { ts: now, leagues: monitorLeagues }];
 writeFileSync(MONITOR_HISTORY_FILE, JSON.stringify(monitorHistory));
 
 function findMonitorSnapshotNear(msAgo, toleranceMs) {
@@ -330,24 +336,29 @@ if (existsSync(MONITOR_STATE_FILE)) {
     try { alertState = JSON.parse(readFileSync(MONITOR_STATE_FILE, 'utf8')); } catch (_) { alertState = {}; }
 }
 
+const snap10 = findMonitorSnapshotNear(10 * 60_000, 11 * 60_000);
+const snap30 = findMonitorSnapshotNear(30 * 60_000, 8  * 60_000);
+const snap1h = findMonitorSnapshotNear(60 * 60_000, 12 * 60_000);
+
 for (const name of MONITOR_LEAGUE_NAMES) {
-    const current = monitorPoints[name];
-    if (current == null) continue; // league not found this cycle
+    const currentRoster = monitorLeagues[name]?.roster;
+    if (!currentRoster) continue; // league not found/fetchable this cycle
 
-    const snap10 = findMonitorSnapshotNear(10 * 60_000, 11 * 60_000);
-    const snap30 = findMonitorSnapshotNear(30 * 60_000, 8  * 60_000);
-    const snap1h = findMonitorSnapshotNear(60 * 60_000, 12 * 60_000);
-    if (!snap10 || !snap30 || !snap1h) continue; // not enough history yet
+    for (const player of currentRoster) {
+        const key = `${name}:${player.UserID}`;
+        if (!snap10 || !snap30 || !snap1h) continue; // not enough history yet
 
-    const p10 = snap10.points[name], p30 = snap30.points[name], p1h = snap1h.points[name];
-    if (p10 == null || p30 == null || p1h == null) continue;
+        const findPast = snap => snap.leagues?.[name]?.roster?.find(p => p.UserID === player.UserID)?.Points;
+        const p10 = findPast(snap10), p30 = findPast(snap30), p1h = findPast(snap1h);
+        if (p10 == null || p30 == null || p1h == null) continue; // player wasn't tracked that far back yet
 
-    const isStalled = current - p10 === 0 && current - p30 === 0 && current - p1h === 0;
-    if (isStalled && !alertState[name]) {
-        await sendDiscordAlert(`⚠️ **${name}** has earned 0 points over the last 10m, 30m, and 1h (currently ${current.toLocaleString()} pts).`);
-        alertState[name] = true;
-    } else if (!isStalled) {
-        alertState[name] = false;
+        const isStalled = player.Points - p10 === 0 && player.Points - p30 === 0 && player.Points - p1h === 0;
+        if (isStalled && !alertState[key]) {
+            await sendDiscordAlert(`⚠️ **${player.DisplayName}** in **${name}** has earned 0 points over the last 10m, 30m, and 1h — possibly disconnected (currently ${player.Points.toLocaleString()} pts).`);
+            alertState[key] = true;
+        } else if (!isStalled) {
+            alertState[key] = false;
+        }
     }
 }
 writeFileSync(MONITOR_STATE_FILE, JSON.stringify(alertState));
