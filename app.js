@@ -21,10 +21,10 @@ const PALETTE = [
 ];
 
 // ── State ──────────────────────────────────
-// The Top 500 leaderboard (plus a couple of standing-exception leagues,
+// The Top 500 leaderboard (plus a few standing-exception leagues,
 // see EXTRA_LEAGUE_NAMES in snapshot.mjs), with each league's roster +
 // point contributions, comes entirely from history.json (written every
-// ~5 min by a background GitHub Action — see .github/scripts/snapshot.mjs).
+// ~10 min by a background GitHub Action — see .github/scripts/snapshot.mjs).
 // historyData holds every snapshot within the retention window (~95 min),
 // oldest first; the last entry is "now". Only search falls back to a live
 // API call, since history.json only tracks the Top 500 + exceptions.

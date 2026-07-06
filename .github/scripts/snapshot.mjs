@@ -3,7 +3,7 @@
 // so the static site can compute per-league AND per-player point deltas
 // without a backend — this script IS the backend, run on a schedule.
 //
-// A couple of leagues outside the Top 500 are tracked as standing
+// A few leagues outside the Top 500 are tracked as standing
 // exceptions (see EXTRA_LEAGUE_NAMES) so their deltas keep working even
 // though they've dropped out of the ranked cutoff.
 //
@@ -22,7 +22,7 @@ const TOP_PAGES          = 5;    // 5 pages * pageSize 100 = 500 leagues
 const PAGE_SIZE          = 100;
 const LIST_CONCURRENCY   = 10;
 const DETAIL_CONCURRENCY = 20;
-const EXTRA_LEAGUE_NAMES = ['jj02', 'woot']; // always tracked, even if outside the Top 500
+const EXTRA_LEAGUE_NAMES = ['jj02', 'woot', 'wint2']; // always tracked, even if outside the Top 500
 
 async function fetchJson(url, attempts = 3) {
     for (let i = 0; i < attempts; i++) {
