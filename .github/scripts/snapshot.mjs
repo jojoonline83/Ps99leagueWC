@@ -34,11 +34,14 @@ const EXTRA_LEAGUE_NAMES = ['jj02', 'woot', 'wint2']; // always tracked, even if
 // Backend-only inactivity monitoring — not shown on the site. Lives under
 // .github/ (rather than the repo root, which is the Pages deploy root)
 // specifically so it's never uploaded as a fetchable static file.
-const MONITOR_LEAGUE_NAMES = ['jj02', 'abwk', 'woot', 'wint1', 'wint2'];
+const MONITOR_LEAGUE_NAMES = ['jj02', 'abwk', 'woot', 'wint1'];
 const MONITOR_DIR          = '.github/monitor-data';
 const MONITOR_HISTORY_FILE = `${MONITOR_DIR}/monitor_history.json`;
 const MONITOR_STATE_FILE   = `${MONITOR_DIR}/monitor_alert_state.json`;
-const DISCORD_WEBHOOK_URL  = process.env.DISCORD_WEBHOOK_URL;
+// Comma-separated to support alerting into more than one Discord channel —
+// just add another webhook URL to the same DISCORD_WEBHOOK_URL secret.
+const DISCORD_WEBHOOK_URLS = (process.env.DISCORD_WEBHOOK_URL || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
 
 async function fetchJson(url, attempts = 3) {
     for (let i = 0; i < attempts; i++) {
@@ -104,19 +107,21 @@ function buildLeagueFromDetail(detail, extra) {
 }
 
 async function sendDiscordAlert(message) {
-    if (!DISCORD_WEBHOOK_URL) {
+    if (!DISCORD_WEBHOOK_URLS.length) {
         console.log(`Discord webhook not configured — would have alerted: ${message}`);
         return;
     }
-    try {
-        await fetch(DISCORD_WEBHOOK_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: message }),
-            signal: AbortSignal.timeout(10000),
-        });
-    } catch (err) {
-        console.log(`Discord alert failed: ${err.message}`);
+    for (const webhookUrl of DISCORD_WEBHOOK_URLS) {
+        try {
+            await fetch(webhookUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: message }),
+                signal: AbortSignal.timeout(10000),
+            });
+        } catch (err) {
+            console.log(`Discord alert failed for one webhook: ${err.message}`);
+        }
     }
 }
 
