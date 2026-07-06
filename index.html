@@ -7,10 +7,10 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>PS99 World Cup II Tracker</title>
-    <link rel="stylesheet" href="style.css?v=12">
+    <link rel="stylesheet" href="style.css?v=13">
     <script>
     (function(){
-        var V = 12;
+        var V = 13;
         var k = '_ps99wc2v';
         var stored = localStorage.getItem(k);
         localStorage.setItem(k, V);
@@ -87,7 +87,7 @@
             </div>
             <div class="team-detail-stats">
                 <div class="stat-box"><span class="stat-label">Rank</span><span class="stat-value" id="ld-rank"></span></div>
-                <div class="stat-box"><span class="stat-label">Points</span><span class="stat-value" id="ld-pts"></span></div>
+                <div class="stat-box"><span class="stat-label">Points</span><span class="stat-value" id="ld-pts"></span><span class="stat-asof" id="ld-pts-asof"></span></div>
                 <div class="stat-box"><span class="stat-label">Roster</span><span class="stat-value" id="ld-roster"></span></div>
                 <div class="stat-box"><span class="stat-label">Level</span><span class="stat-value" id="ld-level"></span></div>
             </div>
@@ -113,6 +113,6 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

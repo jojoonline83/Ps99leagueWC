@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v12]';
+document.title = 'PS99 World Cup II — Leagues [v13]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
@@ -42,6 +42,7 @@ let ui = {
     currentLeagueName: null,
     currentLeagueDetail: null, // unified shape: {ID,Name,Points,MemberCapacity,Level?,Created?,roster:[{UserID,DisplayName,Points,Role}]}
     currentRank: undefined,    // undefined = not yet resolved, null = resolved but unknown, number = exact rank
+    livePointsAsOf: undefined, // set once a live API refresh has landed for the open league; undefined = still showing snapshot-only data
 };
 
 let overallTotalCache = 0;
@@ -127,6 +128,7 @@ function showLeagueDetail(name) {
     ui.currentLeagueName = name;
     ui.currentLeagueDetail = null;
     ui.currentRank = undefined;
+    ui.livePointsAsOf = undefined;
     renderLeagueDetail();
     openLeagueDetail(name);
 }
@@ -152,6 +154,11 @@ function openLeagueDetail(name) {
             renderLeagueDetail();
             resolveRank(name, fromSnapshot);
         }
+        // Points/roster shown above are only as fresh as the last background
+        // snapshot job (~10 min). Quietly overlay the real current values
+        // from a live API call, without touching the historical snapshots
+        // still used for the 10m/30m/1h delta math.
+        refreshLeagueDetailLive(name);
         return;
     }
     fetchLeagueDetailLive(name);
@@ -213,6 +220,7 @@ function renderLeagueDetail() {
     if (!detail) {
         document.getElementById('league-detail-sub').textContent = 'Loading…';
         document.getElementById('ld-pts').textContent = '…';
+        document.getElementById('ld-pts-asof').textContent = '';
         document.getElementById('ld-roster').textContent = '…';
         document.getElementById('ld-level').textContent = '…';
         ['ld-delta-10m', 'ld-delta-30m', 'ld-delta-1h'].forEach(id => {
@@ -229,6 +237,9 @@ function renderLeagueDetail() {
     document.getElementById('ld-pts').textContent = fmt(detail.Points);
     document.getElementById('ld-roster').textContent = `${detail.roster.length}/${detail.MemberCapacity}`;
     document.getElementById('ld-level').textContent = detail.Level ?? '—';
+    document.getElementById('ld-pts-asof').textContent = ui.livePointsAsOf
+        ? `🔴 Live as of ${new Date(ui.livePointsAsOf).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+        : (latestSnapshot() ? `Snapshot as of ${new Date(latestSnapshot().ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — refreshing…` : '');
 
     const snap10 = renderDeltaStat('ld-delta-10m', detail, 10 * 60_000, 11 * 60_000);
     const snap30 = renderDeltaStat('ld-delta-30m', detail, 30 * 60_000, 8  * 60_000);
@@ -496,46 +507,89 @@ function isUnresolvedName(entity) {
     return !!(entity && entity.UserID && entity.DisplayName === String(entity.UserID));
 }
 
+// The background snapshot job publishes its own persistent name-resolution
+// cache (resolved_names.json) — check that first for any still-numeric name
+// before falling back to a live Roblox lookup, so live-fetched leagues
+// benefit from names the background job already resolved.
+let resolvedNamesCachePromise = null;
+function getResolvedNamesCache() {
+    if (!resolvedNamesCachePromise) {
+        resolvedNamesCachePromise = fetch(`resolved_names.json?t=${Date.now()}`)
+            .then(res => (res.ok ? res.json() : {}))
+            .catch(() => ({}));
+    }
+    return resolvedNamesCachePromise;
+}
+
+// Normalizes a raw /leagues/:name API response into the same shape as a
+// snapshot-sourced league (roster merged with role + points), resolving any
+// numeric-fallback display names along the way — shared by the fully-live
+// fallback path and the background live-refresh overlay for tracked leagues.
+async function buildLiveDetail(raw) {
+    const cache = await getResolvedNamesCache();
+    const applyCached = entity => { if (isUnresolvedName(entity) && cache[entity.UserID]) entity.DisplayName = cache[entity.UserID]; };
+    applyCached(raw.Owner);
+    (raw.Members || []).forEach(applyCached);
+
+    const needsResolve = [];
+    if (isUnresolvedName(raw.Owner)) needsResolve.push(raw.Owner.UserID);
+    (raw.Members || []).forEach(m => { if (isUnresolvedName(m)) needsResolve.push(m.UserID); });
+    if (needsResolve.length) {
+        const resolved = await resolveUsernames([...new Set(needsResolve)]);
+        if (isUnresolvedName(raw.Owner) && resolved[raw.Owner.UserID]) raw.Owner.DisplayName = resolved[raw.Owner.UserID];
+        (raw.Members || []).forEach(m => { if (isUnresolvedName(m) && resolved[m.UserID]) m.DisplayName = resolved[m.UserID]; });
+    }
+
+    const contribByUser = {};
+    (raw.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
+
+    const roster = [];
+    if (raw.Owner && raw.Owner.UserID) {
+        roster.push({ UserID: raw.Owner.UserID, DisplayName: raw.Owner.DisplayName, Points: contribByUser[raw.Owner.UserID] ?? 0, Role: 'Owner' });
+    }
+    (raw.Members || []).forEach(m => {
+        roster.push({ UserID: m.UserID, DisplayName: m.DisplayName, Points: contribByUser[m.UserID] ?? 0, Role: 'Member' });
+    });
+
+    return {
+        ID: raw.ID, Name: raw.Name, Points: raw.Points, MemberCapacity: raw.MemberCapacity,
+        Level: raw.Level, Created: raw.Created, roster,
+    };
+}
+
 // Live fallback: a league found via search that isn't tracked at all.
-// Fetches full detail from the API and normalizes it into the same
-// shape as a snapshot-sourced league (roster merged with role + points),
-// so renderLeagueDetail doesn't need to know which path it came from.
 async function fetchLeagueDetailLive(name) {
     try {
         const res = await apiFetch(`/leagues/${encodeURIComponent(name)}`);
-        const raw = res.data;
-
-        const needsResolve = [];
-        if (isUnresolvedName(raw.Owner)) needsResolve.push(raw.Owner.UserID);
-        (raw.Members || []).forEach(m => { if (isUnresolvedName(m)) needsResolve.push(m.UserID); });
-        if (needsResolve.length) {
-            const resolved = await resolveUsernames([...new Set(needsResolve)]);
-            if (isUnresolvedName(raw.Owner) && resolved[raw.Owner.UserID]) raw.Owner.DisplayName = resolved[raw.Owner.UserID];
-            (raw.Members || []).forEach(m => { if (isUnresolvedName(m) && resolved[m.UserID]) m.DisplayName = resolved[m.UserID]; });
-        }
-
-        const contribByUser = {};
-        (raw.PointContributions || []).forEach(c => { contribByUser[c.UserID] = c.Points; });
-
-        const roster = [];
-        if (raw.Owner && raw.Owner.UserID) {
-            roster.push({ UserID: raw.Owner.UserID, DisplayName: raw.Owner.DisplayName, Points: contribByUser[raw.Owner.UserID] ?? 0, Role: 'Owner' });
-        }
-        (raw.Members || []).forEach(m => {
-            roster.push({ UserID: m.UserID, DisplayName: m.DisplayName, Points: contribByUser[m.UserID] ?? 0, Role: 'Member' });
-        });
-
-        const detail = {
-            ID: raw.ID, Name: raw.Name, Points: raw.Points, MemberCapacity: raw.MemberCapacity,
-            Level: raw.Level, Created: raw.Created, roster,
-        };
+        const detail = await buildLiveDetail(res.data);
 
         ui.currentLeagueDetail = detail;
-        if (ui.currentLeagueName === name) renderLeagueDetail();
+        if (ui.currentLeagueName === name) { ui.livePointsAsOf = Date.now(); renderLeagueDetail(); }
         resolveRank(name, detail);
     } catch (err) {
         toast(err.message, 'error');
         document.getElementById('league-detail-sub').textContent = 'Failed to load league detail.';
+    }
+}
+
+// A tracked league's detail renders instantly from the last snapshot, but
+// that's only as fresh as the background job (~10 min). Quietly overlay the
+// real current Points/roster from a live API call — silently, since the
+// snapshot-sourced view is already valid and useful on its own. Deltas keep
+// using the historical snapshots untouched; only the "current" side of the
+// comparison gets fresher.
+async function refreshLeagueDetailLive(name) {
+    try {
+        const res = await apiFetch(`/leagues/${encodeURIComponent(name)}`);
+        if (ui.currentLeagueName !== name) return; // user navigated away while this was in flight
+        const detail = await buildLiveDetail(res.data);
+        if (ui.currentLeagueName !== name) return;
+        ui.currentLeagueDetail = detail;
+        ui.livePointsAsOf = Date.now();
+        renderLeagueDetail();
+    } catch (_) {
+        // Keep showing the snapshot-sourced data — no error surfaced for a
+        // background refresh that didn't need to succeed.
     }
 }
 
