@@ -12,7 +12,7 @@
 // 5-minute tick grows fast — a longer window would make history.json far
 // too large to fetch from a static site or commit to git repeatedly.
 //
-// A separate, lower-key monitoring pass (see MONITOR_LEAGUE_NAMES) watches a
+// A separate, lower-key monitoring pass (see MONITOR_GROUPS) watches a
 // handful of leagues' individual players purely on the backend — never
 // exposed to the site or history.json — and posts a Discord alert if a
 // player goes completely inactive (zero point gain across the 10m/30m/1h
@@ -34,14 +34,24 @@ const EXTRA_LEAGUE_NAMES = ['jj02', 'woot', 'wint2']; // always tracked, even if
 // Backend-only inactivity monitoring — not shown on the site. Lives under
 // .github/ (rather than the repo root, which is the Pages deploy root)
 // specifically so it's never uploaded as a fetchable static file.
-const MONITOR_LEAGUE_NAMES = ['jj02', 'abwk', 'woot', 'wint1'];
+//
+// Split into independent groups so different leagues can alert into
+// different Discord channels. Each group's env var is comma-separated to
+// support broadcasting into more than one channel per group too.
+const MONITOR_GROUPS = [
+    { names: ['abwk', 'woot', 'wint1'], webhookEnvVar: 'DISCORD_WEBHOOK_URL' },
+    { names: ['jj02'], webhookEnvVar: 'DISCORD_WEBHOOK_URL_2' },
+];
+const MONITOR_LEAGUE_NAMES = MONITOR_GROUPS.flatMap(g => g.names);
 const MONITOR_DIR          = '.github/monitor-data';
 const MONITOR_HISTORY_FILE = `${MONITOR_DIR}/monitor_history.json`;
 const MONITOR_STATE_FILE   = `${MONITOR_DIR}/monitor_alert_state.json`;
-// Comma-separated to support alerting into more than one Discord channel —
-// just add another webhook URL to the same DISCORD_WEBHOOK_URL secret.
-const DISCORD_WEBHOOK_URLS = (process.env.DISCORD_WEBHOOK_URL || '')
-    .split(',').map(s => s.trim()).filter(Boolean);
+
+function webhooksForLeague(name) {
+    const group = MONITOR_GROUPS.find(g => g.names.some(n => n.toLowerCase() === name.toLowerCase()));
+    if (!group) return [];
+    return (process.env[group.webhookEnvVar] || '').split(',').map(s => s.trim()).filter(Boolean);
+}
 
 async function fetchJson(url, attempts = 3) {
     for (let i = 0; i < attempts; i++) {
@@ -106,12 +116,12 @@ function buildLeagueFromDetail(detail, extra) {
     };
 }
 
-async function sendDiscordAlert(message) {
-    if (!DISCORD_WEBHOOK_URLS.length) {
+async function sendDiscordAlert(message, webhookUrls) {
+    if (!webhookUrls.length) {
         console.log(`Discord webhook not configured — would have alerted: ${message}`);
         return;
     }
-    for (const webhookUrl of DISCORD_WEBHOOK_URLS) {
+    for (const webhookUrl of webhookUrls) {
         try {
             await fetch(webhookUrl, {
                 method: 'POST',
@@ -177,11 +187,16 @@ async function resolveUsernames(userIds) {
     return map;
 }
 
-// Manual test mode: verify the Discord webhook is wired up correctly
-// without running (or waiting for) a real snapshot cycle.
+// Manual test mode: verify every configured Discord webhook (across all
+// monitor groups) is wired up correctly, without running (or waiting for)
+// a real snapshot cycle.
 if (process.env.TEST_DISCORD_ALERT === 'true') {
-    await sendDiscordAlert('✅ Test alert from PS99 League Tracker — if you can see this, Discord notifications are working correctly.');
-    console.log('Test Discord alert sent (or logged, if DISCORD_WEBHOOK_URL is not configured).');
+    const allWebhookEnvVars = [...new Set(MONITOR_GROUPS.map(g => g.webhookEnvVar))];
+    for (const envVar of allWebhookEnvVars) {
+        const urls = (process.env[envVar] || '').split(',').map(s => s.trim()).filter(Boolean);
+        await sendDiscordAlert(`✅ Test alert from PS99 League Tracker (${envVar}) — if you can see this, Discord notifications are working correctly.`, urls);
+    }
+    console.log('Test Discord alert(s) sent (or logged, for any webhook env var left unconfigured).');
     process.exit(0);
 }
 
@@ -380,7 +395,7 @@ for (const name of MONITOR_LEAGUE_NAMES) {
             const key = `${name}:${player.UserID}:${w.label}`;
             const isStalled = player.Points - past === 0;
             if (isStalled && !alertState[key]) {
-                await sendDiscordAlert(`⚠️ **${player.DisplayName}** in **${name}** has earned 0 points over the last ${w.label} — possibly disconnected (currently ${player.Points.toLocaleString()} pts).`);
+                await sendDiscordAlert(`⚠️ **${player.DisplayName}** in **${name}** has earned 0 points over the last ${w.label} — possibly disconnected (currently ${player.Points.toLocaleString()} pts).`, webhooksForLeague(name));
                 alertState[key] = true;
             } else if (!isStalled) {
                 alertState[key] = false;
