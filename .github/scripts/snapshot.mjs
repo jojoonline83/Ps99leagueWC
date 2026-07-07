@@ -187,16 +187,19 @@ async function resolveUsernames(userIds) {
     return map;
 }
 
-// Manual test mode: verify every configured Discord webhook (across all
-// monitor groups) is wired up correctly, without running (or waiting for)
-// a real snapshot cycle.
+// Manual test mode: verify one (or all) configured Discord webhooks are
+// wired up correctly, without running (or waiting for) a real snapshot cycle.
 if (process.env.TEST_DISCORD_ALERT === 'true') {
     const allWebhookEnvVars = [...new Set(MONITOR_GROUPS.map(g => g.webhookEnvVar))];
-    for (const envVar of allWebhookEnvVars) {
+    const groupFilter = process.env.TEST_DISCORD_GROUP || 'all';
+    const targetEnvVars = groupFilter.includes('DISCORD_WEBHOOK_URL_2') ? ['DISCORD_WEBHOOK_URL_2']
+        : groupFilter.includes('DISCORD_WEBHOOK_URL') ? ['DISCORD_WEBHOOK_URL']
+        : allWebhookEnvVars;
+    for (const envVar of targetEnvVars) {
         const urls = (process.env[envVar] || '').split(',').map(s => s.trim()).filter(Boolean);
         await sendDiscordAlert(`✅ Test alert from PS99 League Tracker (${envVar}) — if you can see this, Discord notifications are working correctly.`, urls);
     }
-    console.log('Test Discord alert(s) sent (or logged, for any webhook env var left unconfigured).');
+    console.log(`Test Discord alert(s) sent for [${targetEnvVars.join(', ')}] (or logged, if unconfigured).`);
     process.exit(0);
 }
 

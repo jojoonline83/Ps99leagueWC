@@ -13,6 +13,11 @@ on:
         description: 'Send a one-off test Discord alert and exit (skips the actual snapshot)'
         type: boolean
         default: false
+      test_discord_group:
+        description: 'Which monitor group to test (only used when test_discord_alert is checked)'
+        type: choice
+        options: ['all', 'group1 (DISCORD_WEBHOOK_URL)', 'group2 (DISCORD_WEBHOOK_URL_2)']
+        default: 'all'
 
 permissions:
   contents: write
@@ -38,6 +43,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL_2: ${{ secrets.DISCORD_WEBHOOK_URL_2 }}
           TEST_DISCORD_ALERT: ${{ github.event.inputs.test_discord_alert }}
+          TEST_DISCORD_GROUP: ${{ github.event.inputs.test_discord_group }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
