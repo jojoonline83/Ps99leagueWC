@@ -41,17 +41,30 @@ jobs:
       # Queuing (the old `concurrency:` block's behavior) just let one stuck
       # run block every subsequent dispatch for its entire stuck duration,
       # turning one bad cycle into a cascading pile-up of missed snapshots.
-      - name: Skip if a previous run is still in progress
+      #
+      # Only defer to an OLDER in-progress run (smaller run id). Deferring to
+      # ANY in-progress run (including newer ones) is a livelock: if two runs
+      # get a runner in the same instant, each one sees the other as "in
+      # progress" and both skip, so the cycle silently records nothing. Only
+      # ever yielding to something strictly older guarantees exactly one
+      # survivor — the oldest run in any simultaneous batch always proceeds.
+      - name: Skip if an older run is still in progress
         id: guard
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          other=$(gh run list --repo "${{ github.repository }}" --workflow snapshot.yml --status in_progress --json databaseId --jq '.[].databaseId' | grep -v "^${{ github.run_id }}$" || true)
-          if [ -n "$other" ]; then
-            echo "Another snapshot run is already in progress (run id(s): $other) — skipping this dispatch."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          else
+          other_ids=$(gh run list --repo "${{ github.repository }}" --workflow snapshot.yml --status in_progress --json databaseId --jq '.[].databaseId' | grep -v "^${{ github.run_id }}$" || true)
+          proceed=true
+          for id in $other_ids; do
+            if [ "$id" -lt "${{ github.run_id }}" ]; then
+              proceed=false
+            fi
+          done
+          if [ "$proceed" = "true" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "An older snapshot run is still in progress (run id(s): $other_ids) — skipping this dispatch."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Record and push snapshot (retries on conflict)
