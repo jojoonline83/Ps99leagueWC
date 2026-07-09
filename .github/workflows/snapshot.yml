@@ -23,10 +23,7 @@ permissions:
   contents: write
   pages: write
   id-token: write
-
-concurrency:
-  group: snapshot
-  cancel-in-progress: false
+  actions: read
 
 jobs:
   snapshot:
@@ -38,7 +35,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # If a previous dispatch of this workflow is still running (e.g. it got
+      # stuck waiting on a slow GitHub-hosted runner), don't queue behind it —
+      # skip this cycle outright and let the next 10-min dispatch try fresh.
+      # Queuing (the old `concurrency:` block's behavior) just let one stuck
+      # run block every subsequent dispatch for its entire stuck duration,
+      # turning one bad cycle into a cascading pile-up of missed snapshots.
+      - name: Skip if a previous run is still in progress
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          other=$(gh run list --repo "${{ github.repository }}" --workflow snapshot.yml --status in_progress --json databaseId --jq '.[].databaseId' | grep -v "^${{ github.run_id }}$" || true)
+          if [ -n "$other" ]; then
+            echo "Another snapshot run is already in progress (run id(s): $other) — skipping this dispatch."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Record and push snapshot (retries on conflict)
+        if: steps.guard.outputs.proceed == 'true'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL_2: ${{ secrets.DISCORD_WEBHOOK_URL_2 }}
@@ -66,9 +83,11 @@ jobs:
       # fires for these commits. Deploy inline here instead, so every fresh
       # snapshot actually reaches the live site.
       - name: Setup Pages
+        if: steps.guard.outputs.proceed == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
+        if: steps.guard.outputs.proceed == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: '.'
@@ -79,24 +98,25 @@ jobs:
       # successful deploy despite newer data already being pushed. Retry a
       # couple of times against the same uploaded artifact before giving up.
       - name: Deploy to GitHub Pages
+        if: steps.guard.outputs.proceed == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
         continue-on-error: true
 
       - name: Wait before deploy retry
-        if: steps.deployment.outcome == 'failure'
+        if: steps.guard.outputs.proceed == 'true' && steps.deployment.outcome == 'failure'
         run: sleep 15
 
       - name: Deploy to GitHub Pages (retry 1)
-        if: steps.deployment.outcome == 'failure'
+        if: steps.guard.outputs.proceed == 'true' && steps.deployment.outcome == 'failure'
         id: deployment_retry1
         uses: actions/deploy-pages@v4
         continue-on-error: true
 
       - name: Wait before deploy retry 2
-        if: steps.deployment_retry1.outcome == 'failure'
+        if: steps.guard.outputs.proceed == 'true' && steps.deployment_retry1.outcome == 'failure'
         run: sleep 30
 
       - name: Deploy to GitHub Pages (retry 2)
-        if: steps.deployment_retry1.outcome == 'failure'
+        if: steps.guard.outputs.proceed == 'true' && steps.deployment_retry1.outcome == 'failure'
         uses: actions/deploy-pages@v4
