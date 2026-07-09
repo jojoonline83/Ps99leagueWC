@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v13]';
+document.title = 'PS99 World Cup II — Leagues [v14]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
@@ -324,10 +324,22 @@ function findSnapshotNear(msAgo, toleranceMs) {
     // current data and showing a spurious +0 for every league and player.
     const latest = historyData[historyData.length - 1];
     const targetTs = Date.now() - msAgo;
+    // A generous toleranceMs (needed so cadence drift on the "too old" side
+    // doesn't leave the window empty) also opens the door the other way: if
+    // the snapshot cadence ever hiccups (e.g. an external cron double-firing
+    // moments after a missed tick), a snapshot from mere seconds before the
+    // CURRENT one can become the numerically "closest" match to "N minutes
+    // ago" and get accepted, since ±toleranceMs around the target is a wide
+    // net. Require the candidate to be at least half the window older than
+    // the current reference snapshot itself (not just old relative to
+    // wall-clock, which drifts independently of the data) — so a near-instant
+    // predecessor never gets mistaken for a meaningful N-minutes-ago point.
+    const minAgeMs = msAgo / 2;
     let best = null, bestDiff = Infinity;
     for (const entry of historyData) {
         if (entry === latest) continue;
         if (!hasRosterData(entry)) continue;
+        if (latest.ts - entry.ts < minAgeMs) continue;
         const diff = Math.abs(entry.ts - targetTs);
         if (diff < bestDiff) { bestDiff = diff; best = entry; }
     }
