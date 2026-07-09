@@ -4,7 +4,7 @@
 
 'use strict';
 
-document.title = 'PS99 World Cup II — Leagues [v14]';
+document.title = 'PS99 World Cup II — Leagues [v15]';
 
 // ── Constants ──────────────────────────────
 const STORAGE_KEY = 'ps99_worldcup2_v4';
@@ -317,22 +317,28 @@ function hasRosterData(entry) {
 function findSnapshotNear(msAgo, toleranceMs) {
     if (historyData.length < 2) return null;
     // The current values being compared against always come from the latest
-    // snapshot, so it must never be a candidate match here — otherwise, once
-    // the real snapshot cadence drifts close to the window size (as happened
-    // when it settled around ~10 minutes), "closest to N minutes ago" can
-    // resolve to the latest snapshot itself, comparing current data against
-    // current data and showing a spurious +0 for every league and player.
+    // snapshot, so "N minutes ago" is measured from latest.ts, not wall-clock
+    // Date.now() — the delta represents points gained in the N minutes
+    // leading up to that snapshot, a fixed quantity independent of how long
+    // the page has been open or how stale the last snapshot happens to be.
+    // (Anchoring to wall-clock instead caused a real bug: once the site's
+    // data lagged a bit behind real time, the wall-clock target and the
+    // latest-anchored minimum-age check below fell out of sync and rejected
+    // otherwise-valid matches, showing a dash for everything.)
     const latest = historyData[historyData.length - 1];
-    const targetTs = Date.now() - msAgo;
-    // A generous toleranceMs (needed so cadence drift on the "too old" side
-    // doesn't leave the window empty) also opens the door the other way: if
-    // the snapshot cadence ever hiccups (e.g. an external cron double-firing
+    const targetTs = latest.ts - msAgo;
+    // It must also never resolve to latest itself — otherwise, once the real
+    // snapshot cadence drifts close to the window size (as happened when it
+    // settled around ~10 minutes), "closest to N minutes ago" can resolve to
+    // the latest snapshot, comparing current data against current data and
+    // showing a spurious +0 for every league and player. A generous
+    // toleranceMs (needed so cadence drift on the "too old" side doesn't
+    // leave the window empty) also opens the door the other way: if the
+    // snapshot cadence ever hiccups (e.g. an external cron double-firing
     // moments after a missed tick), a snapshot from mere seconds before the
-    // CURRENT one can become the numerically "closest" match to "N minutes
-    // ago" and get accepted, since ±toleranceMs around the target is a wide
-    // net. Require the candidate to be at least half the window older than
-    // the current reference snapshot itself (not just old relative to
-    // wall-clock, which drifts independently of the data) — so a near-instant
+    // CURRENT one can become the numerically "closest" match, since
+    // ±toleranceMs around the target is a wide net. Require the candidate to
+    // be at least half the window older than latest so a near-instant
     // predecessor never gets mistaken for a meaningful N-minutes-ago point.
     const minAgeMs = msAgo / 2;
     let best = null, bestDiff = Infinity;
