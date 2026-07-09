@@ -354,8 +354,10 @@ writeFileSync(MONITOR_HISTORY_FILE, JSON.stringify(monitorHistory));
 
 function findMonitorSnapshotNear(msAgo, toleranceMs) {
     const targetTs = now - msAgo;
+    const minAgeMs = msAgo / 2;
     let best = null, bestDiff = Infinity;
     for (const entry of pastMonitorHistory) {
+        if (now - entry.ts < minAgeMs) continue;
         const diff = Math.abs(entry.ts - targetTs);
         if (diff < bestDiff) { bestDiff = diff; best = entry; }
     }
