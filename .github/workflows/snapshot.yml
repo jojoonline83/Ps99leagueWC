@@ -53,13 +53,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The league event ends 2026-07-11 00:00 GMT+8 (= 2026-07-10 16:00
-          # UTC). The external Apps Script cron keeps dispatching every 10
-          # minutes regardless — rather than needing access to that cron
-          # (which is outside GitHub and this workflow), just make every
-          # dispatch after the cutoff a no-op here.
-          if [ "$(date -u +%s)" -ge "$(date -u -d '2026-07-10T16:00:00Z' +%s)" ]; then
-            echo "Event has ended (past 2026-07-10T16:00:00Z) — skipping this dispatch."
+          # Stopped early by explicit request (originally the cutoff was the
+          # event's 2026-07-10 16:00 UTC end time, but the user asked to stop
+          # right away instead of waiting). The external Apps Script cron
+          # keeps dispatching every 10 minutes regardless — rather than
+          # needing access to that cron (which is outside GitHub and this
+          # workflow), just make every dispatch after this cutoff a no-op.
+          if [ "$(date -u +%s)" -ge "$(date -u -d '2026-07-10T15:33:00Z' +%s)" ]; then
+            echo "Snapshotting stopped by request (past 2026-07-10T15:33:00Z) — skipping this dispatch."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
